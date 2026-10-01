@@ -1,0 +1,39 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: communications
+      POSTGRES_USER: communications
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U communications]
+      interval: 5s
+      retries: 10
+  migrate:
+    build: .
+    env_file: .env
+    command: [python, -m, app.manage, init-db]
+    depends_on:
+      db:
+        condition: service_healthy
+  api:
+    build: .
+    env_file: .env
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+  worker:
+    build: .
+    env_file: .env
+    command: [python, -m, app.worker]
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+volumes:
+  postgres:
