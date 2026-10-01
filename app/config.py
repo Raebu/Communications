@@ -31,6 +31,10 @@ class Settings:
     terms_url: str = os.getenv('TERMS_URL', '')
     privacy_url: str = os.getenv('PRIVACY_URL', '')
     terms_version: str = os.getenv('TERMS_VERSION', '')
+    ai_url: str = os.getenv('AI_URL', '').rstrip('/')
+    ai_key: str = os.getenv('AI_API_KEY', '')
+    ai_model: str = os.getenv('AI_MODEL', '')
+    ai_daily_requests: int = int(os.getenv('AI_DAILY_REQUESTS', '100'))
     registration_enabled: bool = os.getenv('REGISTRATION_ENABLED', 'false') == 'true'
 
     def validate(self):

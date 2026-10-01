@@ -29,7 +29,7 @@ The browser uses same-origin authenticated API calls. Secure HttpOnly cookies ho
 | --- | --- | --- |
 | Business Number | One UK number, UK call forwarding | Operator-configured Stripe recurring price |
 | Connect | Business Number plus SMS inbox and replies | Operator-configured Stripe recurring price |
-| AI Receptionist | Roadmap; checkout disabled | Set price after model, messaging and integration costs are measured |
+| AI Receptionist | SMS drafts and turn-based voice implemented; checkout disabled pending launch | Set price after model, messaging and integration costs are measured |
 | Additional / vanity numbers | Search supports digit patterns; one number limit | No scarcity markup or inventory holding implemented |
 | WhatsApp / RCS | Separate non-active statuses shown | Per-customer registration and commercial approval required |
 
@@ -74,7 +74,7 @@ Twilio callbacks use SDK validation with the customer's encrypted Auth Token and
 
 Message status callbacks update matching tenant/provider SID only. Older states do not overwrite delivery; a callback arriving before the worker stores SID gets 503 so delivery is retried. Operators must still reconcile missing callbacks with provider logs.
 
-Calls receive signed inbound Voice webhooks. Approved, active customers can forward to configured UK 01/02/07 destinations, with a 20-second ring timeout and up to ten reserved minutes per call from a configurable monthly allowance. Monthly provider budget is checked before forwarding. Loop detection covers self-forwarding only. Provider cost totals lag; this is not a real-time hard financial guarantee; local usage allowances and forwarding reservations additionally limit customer activity. A forwarding reservation/completion ledger is implemented. Call recordings, voicemail, a call-history UI, SIP/WebRTC dialler, outgoing calls, emergency calling and voice AI are not shipped.
+Calls receive signed inbound Voice webhooks. Approved, active customers can forward to configured UK 01/02/07 destinations, with a 20-second ring timeout and up to ten reserved minutes per call from a configurable monthly allowance. Monthly provider budget is checked before forwarding. Loop detection covers self-forwarding only. Provider cost totals lag; this is not a real-time hard financial guarantee; local usage allowances and forwarding reservations additionally limit customer activity. A forwarding reservation/completion ledger is implemented. Call recordings, voicemail, a call-history UI, SIP/WebRTC dialler, outgoing calls, and emergency calling are not shipped. Turn-based inbound voice AI is implemented; see [AI architecture](AI_ARCHITECTURE.md).
 
 ## Billing and risk controls
 

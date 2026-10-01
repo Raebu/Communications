@@ -11,7 +11,7 @@ async function api(path, method = 'GET', data) {
 async function act(fn) { try { notice(''); await fn(); } catch (error) { notice(error.message); } }
 function fields(form) { return Object.fromEntries(new FormData(form)); }
 function button(text, fn, secondary = false) { const b = element('button', text, secondary ? 'secondary' : ''); b.type = 'button'; b.onclick = () => act(async () => { b.disabled = true; try { await fn(); } finally { b.disabled = false; } }); return b; }
-function show(view) { document.querySelectorAll('.view').forEach(e => e.hidden = e.id !== view); document.querySelectorAll('nav button').forEach(e => e.classList.toggle('active', e.dataset.view === view)); if (view === 'inbox') act(loadThreads); if (view === 'admin') act(loadAdmin); }
+function show(view) { document.querySelectorAll('.view').forEach(e => e.hidden = e.id !== view); document.querySelectorAll('nav button').forEach(e => e.classList.toggle('active', e.dataset.view === view)); if (view === 'inbox') act(loadThreads); if (view === 'ai') act(loadAI); if (view === 'admin') act(loadAdmin); }
 document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => show(b.dataset.view));
 $('#auth-toggle').onclick = () => { registering = !registering; $('#register-fields').hidden = !registering; $('#auth-submit').textContent = registering ? 'Create account' : 'Sign in'; $('#auth-toggle').textContent = registering ? 'I already have an account' : 'Create an account'; };
 $('#auth-form').onsubmit = e => { e.preventDefault(); act(async () => { const data = fields(e.target); if (registering) { data.accept_terms = Boolean(data.accept_terms); await api('/api/register', 'POST', data); } await api('/api/login', 'POST', { email: data.email, password: data.password, totp: data.totp || '' }); await load(); }); };
@@ -54,6 +54,7 @@ async function loadThreads() {
 async function loadMessages() {
   if (!selected) return;
   const messages = await api('/api/messages?' + new URLSearchParams({number_id:selected.number_id,peer:selected.peer})); $('#messages').replaceChildren();
+  lastInboundId=messages.filter(m=>m.direction==='inbound').at(-1)?.id;
   for (const m of messages) { const bubble = element('div', undefined, 'bubble '+m.direction); bubble.append(element('span',m.body), element('small',`${m.status} · ${new Date(m.at).toLocaleString()}`)); $('#messages').append(bubble); }
   $('#messages').scrollTop = $('#messages').scrollHeight;
 }
@@ -80,3 +81,26 @@ if (actionToken && ['verify','reset'].includes(action)) {
   $('#recovery-form').onsubmit=e=>{e.preventDefault();act(async()=>{await api('/api/security/complete/'+action,'POST',{token:actionToken,password:fields(e.target).password||''}); location.assign('/');});};
 }
 api('/api/service').then(s=>{for(const [id,url] of [['terms-link',s.terms_url],['privacy-link',s.privacy_url]]){if(url&&url.startsWith('https://'))$( '#'+id).href=url;}$('#auth-toggle').hidden=!s.registration_open;}).catch(()=>{});
+
+let lastInboundId, draftPoll;
+async function loadAI() {
+  const p=await api('/api/ai/profile');
+  $('#ai-provider-status').textContent=p.configured?'AI provider configured.':'AI provider needs to be configured before activation.';
+  for(const key of ['business_info','greeting']) $('#ai-form').elements[key].value=p[key];
+  for(const key of ['enabled','voice_enabled']) $('#ai-form').elements[key].checked=p[key];
+}
+$('#ai-form').onsubmit=e=>{e.preventDefault();act(async()=>{const d=fields(e.target);d.enabled=Boolean(d.enabled);d.voice_enabled=Boolean(d.voice_enabled);await api('/api/ai/profile','PUT',d);notice('AI settings saved.');});};
+$('#draft-ai').onclick=()=>act(async()=>{
+  if(!lastInboundId) throw Error('Select a conversation with a customer message first.');
+  const thread={...selected};
+  const j=await api('/api/ai/drafts/'+lastInboundId,'POST');
+  clearInterval(draftPoll);
+  notice('Generating an AI draft…');
+  let attempts=0;
+  draftPoll=setInterval(()=>act(async()=>{
+    const d=await api('/api/ai/drafts/'+j.id);
+    if(d.status==='ready') {clearInterval(draftPoll);if(selected?.number_id===thread.number_id&&selected?.peer===thread.peer){$('#send-form').elements.body.value=d.reply;notice('AI draft ready. Review it before sending.');}else notice('Draft ready. Return to its conversation to load it again.');}
+    else if(['failed','generating'].includes(d.status)&&++attempts>30 || d.status==='failed'){clearInterval(draftPoll);notice('AI draft unavailable. Write a reply or contact support.');}
+    else if(++attempts>60){clearInterval(draftPoll);notice('AI worker is unavailable. Try again later.');}
+  }),2000);
+});

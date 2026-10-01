@@ -2,7 +2,7 @@
 
 UK business number provisioning, call forwarding and a tenant-isolated threaded SMS inbox, backed by customer-specific Twilio subaccounts and Stripe subscriptions.
 
-**Status: commercial launch implementation; live provider configuration and acceptance remain outstanding.** Live credentials, approved customer bundles, Stripe prices and deployment are not configured by committing this repository. WhatsApp, RCS, AI, email and calendar actions are architectural roadmap items and are not live features.
+**Status: commercial launch implementation; live provider configuration and acceptance remain outstanding.** Live credentials, approved customer bundles, Stripe prices and deployment are not configured by committing this repository. WhatsApp, RCS, business email and calendar actions remain roadmap items. AI SMS drafts and turn-based inbound voice are implemented but are not live features until provider setup and acceptance tests are completed.
 
 See [production launch handoff](docs/LAUNCH.md), [full architecture](docs/ARCHITECTURE.md), [operations](docs/OPERATIONS.md) and [delivery roadmap](docs/ROADMAP.md).
 
@@ -77,3 +77,7 @@ Tests cover authentication, CSRF, tenant isolation, purchase gates/idempotency, 
 MIT licensed.
 
 Production adds email verification/recovery, administrator TOTP MFA, current-state invoice reconciliation, monthly SMS/call allowances, versioned migrations, HTTPS proxy configuration and encrypted backup scripts. `/ready` deliberately returns 503 until required live configuration and worker heartbeat are present.
+
+## AI receptionist
+
+Version 0.3 adds tenant-specific SMS reply drafts and inbound turn-based voice AI, disabled by default. See [AI architecture and activation](docs/AI_ARCHITECTURE.md). No live model or telephony deployment is configured yet.

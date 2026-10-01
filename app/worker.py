@@ -13,6 +13,7 @@ from datetime import timedelta
 from decimal import Decimal
 from sqlalchemy import or_, select
 from .config import settings
+from .ai import draft_one
 from .models import Audit, DB, EmailJob, Message, Number, Order, Suppression, Tenant, WorkerHeartbeat, now
 from .security import decrypt
 from .billing import periodic_reconcile
@@ -55,6 +56,7 @@ def provision_one():
                 raise RuntimeError('Duplicate provider resources require reconciliation')
             kwargs = {'sms_url': settings.public_url + '/webhooks/twilio/inbound', 'sms_method': 'POST',
                       'voice_url': settings.public_url + '/webhooks/twilio/voice', 'voice_method': 'POST',
+                      'status_callback': settings.public_url + '/webhooks/twilio/voice-status', 'status_callback_method': 'POST',
                       'friendly_name': 'raeburn-order:' + order.id}
             if existing:
                 remote = existing[0]
@@ -165,7 +167,8 @@ def run():
             heartbeat()
             if settings.stripe_key:
                 periodic_reconcile()
-            worked = email_one()
+            worked = draft_one()
+            worked = email_one() or worked
             worked = provision_one() or worked
             worked = send_one() or worked
             if not worked:

@@ -182,3 +182,35 @@ class Call(Base):
     billed_minutes: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(30), default='reserved')
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class AIProfile(Base):
+    __tablename__ = 'ai_profiles'
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id'), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    voice_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    business_info: Mapped[str] = mapped_column(Text, default='')
+    greeting: Mapped[str] = mapped_column(String(500), default='Hello, you are speaking with our AI receptionist. How can I help?')
+
+
+class AIJob(Base):
+    __tablename__ = 'ai_jobs'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id'), index=True)
+    message_id: Mapped[str] = mapped_column(ForeignKey('messages.id'), unique=True)
+    status: Mapped[str] = mapped_column(String(30), default='queued')
+    reply: Mapped[str] = mapped_column(Text, default='')
+    error: Mapped[str] = mapped_column(String(80), default='')
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class VoiceSession(Base):
+    __tablename__ = 'voice_sessions'
+    sid: Mapped[str] = mapped_column(ForeignKey('calls.sid'), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id'), index=True)
+    history: Mapped[str] = mapped_column(Text, default='')
+    turn: Mapped[int] = mapped_column(Integer, default=0)
+    token: Mapped[str] = mapped_column(String(64))
+    previous_token: Mapped[str] = mapped_column(String(64), default='')
+    last_xml: Mapped[str] = mapped_column(Text, default='')
+    status: Mapped[str] = mapped_column(String(30), default='active')

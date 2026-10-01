@@ -13,6 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from twilio.request_validator import RequestValidator
 from .config import settings
+from .ai import router as ai_router, start_voice, voice_turn, configured as ai_configured
+from .models import AIProfile
 from .models import Call, WorkerHeartbeat, Audit, Base, DB, Event, Message, Number, Order, Session, Suppression, Tenant, User, engine, now
 from .providers import create_subaccount, parent_client, tenant_client
 from .security import csrf, current_user, decrypt, hash_password, rate_limit, verify_password, verify_totp
@@ -29,8 +31,9 @@ async def lifespan(app):
     yield
 
 
-app = FastAPI(title='Raeburn Communications', version='0.2.0', lifespan=lifespan)
+app = FastAPI(title='Raeburn Communications', version='0.3.0', lifespan=lifespan)
 app.include_router(accounts_router)
+app.include_router(ai_router)
 app.mount('/static', StaticFiles(directory='app/static'), name='static')
 
 
@@ -476,7 +479,9 @@ async def voice(request: Request):
         t = db.scalar(select(Tenant).where(Tenant.id == tenant_id).with_for_update())
         n = db.scalar(select(Number).where(Number.tenant_id == t.id, Number.phone == p.get('To')))
         sid = p.get('CallSid', '')
-        allowed = n and n.voice and n.forwarding and sid and t.billing_status == 'active' and t.status == 'approved'
+        profile = db.get(AIProfile, t.id)
+        ai_allowed = profile and profile.voice_enabled and ai_configured()
+        allowed = n and n.voice and (n.forwarding or ai_allowed) and sid and t.billing_status == 'active' and t.status == 'approved'
         call = db.get(Call, sid) if sid else None
         if call and (not n or call.tenant_id != t.id or call.number_id != n.id):
             raise HTTPException(409, 'Call ownership mismatch')
@@ -493,10 +498,13 @@ async def voice(request: Request):
         elif call and call.status == 'completed':
             allowed = False
         if allowed and minutes:
+            ai_xml = start_voice(db, t, n, call) if ai_allowed else None
             destination = call.destination
             callback = settings.public_url + '/webhooks/twilio/voice-status'
             xml = ('<Response><Dial timeout="20" timeLimit="' + str(minutes * 60) + '" action="' + escape(callback, {'"': '&quot;'})
                    + '" method="POST"><Number>' + escape(destination) + '</Number></Dial></Response>')
+            if ai_xml:
+                xml = ai_xml
         else:
             xml = '<Response><Say>This business is currently unavailable. Please try again later.</Say></Response>'
     return Response(xml, media_type='application/xml')
@@ -509,14 +517,18 @@ async def voice_status(request: Request):
         call = db.scalar(select(Call).where(Call.sid == p.get('CallSid'), Call.tenant_id == tenant_id).with_for_update())
         if not call:
             raise HTTPException(404, 'Call not found')
+        if p.get('CallStatus') and p.get('CallStatus') != 'completed':
+            return Response('<Response/>', media_type='application/xml')
         try:
-            seconds = int(p.get('DialCallDuration', '0'))
+            seconds = int(p.get('CallDuration', p.get('DialCallDuration', '0')))
+            if 'CallDuration' not in p:
+                seconds = max(seconds, int((now() - call.created_at.replace(tzinfo=now().tzinfo)).total_seconds()))
         except ValueError:
             raise HTTPException(422, 'Invalid call duration')
         if seconds < 0 or seconds > call.reserved_minutes * 60 + 60:
             raise HTTPException(422, 'Call duration outside reservation')
-        if call.status != 'completed':
-            call.billed_minutes, call.status = (seconds + 59) // 60, 'completed'
+        if call.status != 'completed' or 'CallDuration' in p:
+            call.billed_minutes, call.status = max(call.billed_minutes, (seconds + 59) // 60), 'completed'
     return Response('<Response/>', media_type='application/xml')
 
 
@@ -602,3 +614,11 @@ def service_info():
             'support_email': settings.support_email, 'terms_url': settings.terms_url, 'privacy_url': settings.privacy_url,
             'terms_version': settings.terms_version, 'registration_open': settings.registration_enabled,
             'sms_monthly_segments': settings.sms_monthly_segments, 'voice_monthly_minutes': settings.voice_monthly_minutes}
+
+
+@app.post('/webhooks/twilio/ai-voice')
+async def ai_voice(request: Request):
+    tenant_id, params = await validate_twilio(request)
+    from starlette.concurrency import run_in_threadpool
+    xml = await run_in_threadpool(voice_turn, tenant_id, params, request.query_params.get('token', ''))
+    return Response(xml, media_type='application/xml')

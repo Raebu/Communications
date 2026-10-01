@@ -44,3 +44,7 @@ No speculative dates or completion percentages are assigned to unimplemented fea
 ## Commercial implementation update — 0.2.0
 
 Email verification/recovery, authenticator MFA, versioned migrations, periodic invoice reconciliation, worker heartbeat, local monthly usage allowances, call reservations/completion ledger, HTTPS and encrypted backups have been implemented. The remaining launch boundary is secure live provider configuration, deployed host/DNS, final service identity/policies/prices, and real acceptance tests. See [LAUNCH.md](LAUNCH.md). Usage overage billing and AI/channel expansion remain unimplemented.
+
+## 0.3 AI implementation
+
+Tenant business profiles, SMS drafts and turn-based inbound voice AI with encrypted session memory, signed replay-safe turns and human fallback are implemented. Live model/voice acceptance, streaming ConversationRelay, autonomous actions, calendar/email connectors and final AI pricing remain outstanding. See [AI architecture](AI_ARCHITECTURE.md).

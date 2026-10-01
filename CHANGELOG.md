@@ -1,3 +1,10 @@
+# 0.3.0
+
+- Tenant AI profiles and SMS drafts with bounded model context, durable worker and owner review.
+- Inbound speech/DTMF receptionist, AI disclosure, encrypted session history, replay-safe turns and human forwarding fallback.
+- Per-tenant daily request quotas and whole-call completion accounting.
+- AI activation UI, migration, architecture and security tests. Live provider verification remains outstanding.
+
 # Changelog
 
 ## 0.2.0 — 2026-10-01
