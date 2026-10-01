@@ -2,9 +2,9 @@
 
 UK business number provisioning, call forwarding and a tenant-isolated threaded SMS inbox, backed by customer-specific Twilio subaccounts and Stripe subscriptions.
 
-**Status: runnable pilot core. Not yet a publicly launched service.** Live credentials, approved customer bundles, Stripe prices and deployment are not configured by committing this repository. WhatsApp, RCS, AI, email and calendar actions are architectural roadmap items and are not live features.
+**Status: commercial launch implementation; live provider configuration and acceptance remain outstanding.** Live credentials, approved customer bundles, Stripe prices and deployment are not configured by committing this repository. WhatsApp, RCS, AI, email and calendar actions are architectural roadmap items and are not live features.
 
-See [full architecture](docs/ARCHITECTURE.md), [operations](docs/OPERATIONS.md) and [delivery roadmap](docs/ROADMAP.md).
+See [production launch handoff](docs/LAUNCH.md), [full architecture](docs/ARCHITECTURE.md), [operations](docs/OPERATIONS.md) and [delivery roadmap](docs/ROADMAP.md).
 
 ## Run locally
 
@@ -17,11 +17,11 @@ cp .env.example .env
 set -a
 . ./.env
 set +a
-python -m app.manage init-db
+python -m alembic upgrade head
 python -m uvicorn app.main:app --reload
 ```
 
-Open http://localhost:8000. Set `REGISTRATION_ENABLED=true` for a controlled pilot. Use a 12+ character password. Provider-free mode serves the portal and authentication; availability search, payment and activation fail explicitly until configured. No fake inventory or fake payment approvals are shown.
+Open http://localhost:8000. Set `REGISTRATION_ENABLED=true` for local development. Production registration also requires complete `PUBLIC_SALES_ENABLED` configuration. Use a 12+ character password. Provider-free mode serves the portal and authentication; availability search, payment and activation fail explicitly until configured. No fake inventory or fake payment approvals are shown.
 
 Generate and set `ENCRYPTION_KEY` before connecting Twilio:
 
@@ -60,7 +60,7 @@ Do not market the app or enable paid public registration until the launch gates 
 | Twilio inbound SMS | `/webhooks/twilio/inbound` | Attached when number is provisioned |
 | Twilio SMS delivery | `/webhooks/twilio/status` | Attached to each outbound message |
 | Twilio incoming call | `/webhooks/twilio/voice` | Attached when number is provisioned |
-| Stripe | `/webhooks/stripe` | Configure `customer.subscription.created`, `.updated`, `.deleted` and signing secret |
+| Stripe | `/webhooks/stripe` | Configure subscription, invoice and Checkout lifecycle events in the launch handoff and signing secret |
 
 Twilio signatures are checked using each customer's Auth Token and `PUBLIC_URL`. Stripe signatures use the raw payload. Webhook URLs must be publicly reachable over HTTPS. Do not point RCS callbacks to the SMS handler; RCS is a separate future integration.
 
@@ -75,3 +75,5 @@ node --check app/static/app.js
 Tests cover authentication, CSRF, tenant isolation, purchase gates/idempotency, opt-outs, webhook replay/signatures, delivery-state ordering, provisioning reconciliation and ambiguous outbound failures. External calls are mocked; tests do not purchase numbers, send SMS or charge cards.
 
 MIT licensed.
+
+Production adds email verification/recovery, administrator TOTP MFA, current-state invoice reconciliation, monthly SMS/call allowances, versioned migrations, HTTPS proxy configuration and encrypted backup scripts. `/ready` deliberately returns 503 until required live configuration and worker heartbeat are present.

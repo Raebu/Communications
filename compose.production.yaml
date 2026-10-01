@@ -1,0 +1,20 @@
+services:
+  api:
+    ports: !reset []
+  proxy:
+    image: caddy:2.10-alpine
+    environment:
+      SERVICE_HOSTNAME: ${SERVICE_HOSTNAME:?Set SERVICE_HOSTNAME to your DNS hostname}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deployment/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    restart: unless-stopped
+volumes:
+  caddy_data:
+  caddy_config:

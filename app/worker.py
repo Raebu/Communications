@@ -4,12 +4,18 @@ Never blindly retry an ambiguous outbound send: Twilio Messaging create has no
 application idempotency key. An operator reconciles sending/review records.
 """
 import logging
+import os
+import smtplib
+import socket
+from email.message import EmailMessage
 import time
 from datetime import timedelta
 from decimal import Decimal
 from sqlalchemy import or_, select
 from .config import settings
-from .models import Audit, DB, Message, Number, Order, Suppression, Tenant, now
+from .models import Audit, DB, EmailJob, Message, Number, Order, Suppression, Tenant, WorkerHeartbeat, now
+from .security import decrypt
+from .billing import periodic_reconcile
 from .providers import tenant_client
 
 log = logging.getLogger(__name__)
@@ -69,7 +75,7 @@ def provision_one():
             order.status, order.error, order.lease_until = 'active', '', None
             db.add(Audit(tenant_id=t.id, actor='worker', action='number.provisioned', detail=order.id))
     except Exception:
-        log.exception('Provisioning order %s requires review', order_id)
+        log.error('Provisioning order %s requires review', order_id)
         with DB.begin() as db:
             order = db.get(Order, order_id)
             order.status, order.error, order.lease_until = 'review', 'Provisioning needs operator reconciliation. No automatic purchase retry.', None
@@ -100,24 +106,72 @@ def send_one():
                 status_callback=settings.public_url + '/webhooks/twilio/status')
             m.sid, m.status = remote.sid, remote.status
     except Exception:
-        log.exception('Outbound message %s requires reconciliation', message_id)
+        log.error('Outbound message %s requires reconciliation', message_id)
         with DB.begin() as db:
             m = db.get(Message, message_id)
             m.status, m.error = 'review', 'provider_result_unknown'
     return True
 
 
+
+def heartbeat():
+    identity = socket.gethostname() + ':' + str(os.getpid())
+    with DB.begin() as db:
+        row = db.get(WorkerHeartbeat, identity)
+        if row:
+            row.seen_at = now()
+        else:
+            db.add(WorkerHeartbeat(id=identity, seen_at=now()))
+
+
+def email_one():
+    if not settings.smtp_host:
+        return False
+    with DB.begin() as db:
+        job = db.scalar(select(EmailJob).where(EmailJob.status == 'queued').order_by(EmailJob.created_at)
+                        .with_for_update(skip_locked=True).limit(1))
+        if not job:
+            return False
+        job.status = 'sending'
+        job_id = job.id
+    try:
+        with DB() as db:
+            job = db.get(EmailJob, job_id)
+            payload = decrypt(job.encrypted_payload)
+            message = EmailMessage()
+            message['From'], message['To'], message['Subject'] = settings.email_from, job.recipient, payload['subject']
+            message.set_content(payload['body'])
+            connection = smtplib.SMTP_SSL if settings.smtp_port == 465 else smtplib.SMTP
+            with connection(settings.smtp_host, settings.smtp_port, timeout=15) as smtp:
+                if settings.smtp_port != 465:
+                    smtp.starttls()
+                if settings.smtp_user:
+                    smtp.login(settings.smtp_user, settings.smtp_password)
+                smtp.send_message(message)
+        with DB.begin() as db:
+            job = db.get(EmailJob, job_id)
+            job.status, job.encrypted_payload = 'sent', ''
+    except Exception:
+        log.error('Transactional email %s requires review', job_id)
+        with DB.begin() as db:
+            db.get(EmailJob, job_id).status = 'review'
+    return True
+
 def run():
     settings.validate()
     logging.basicConfig(level=logging.INFO)
     while True:
         try:
-            worked = provision_one()
+            heartbeat()
+            if settings.stripe_key:
+                periodic_reconcile()
+            worked = email_one()
+            worked = provision_one() or worked
             worked = send_one() or worked
             if not worked:
                 time.sleep(2)
         except Exception:
-            log.exception('Worker cycle failed')
+            log.error('Worker cycle failed; inspect secure provider dashboards')
             time.sleep(5)
 
 

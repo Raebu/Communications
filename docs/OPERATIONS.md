@@ -42,10 +42,10 @@ Fernet protects stored provider secrets; use a managed secret store for the mast
 python -m app.manage reset-password customer@example.com
 ```
 
-No email password reset flow is shipped. Operator access changes must be audited and tightly controlled.
+One-use password recovery and verification emails are queued in the encrypted transactional outbox; monitor mail failures. MFA recovery remains a separately verified operator process. Operator access changes must be audited and tightly controlled.
 
 ## Schema, backups and deployment
 
-`init-db` creates missing initial tables; it is not a schema migration framework. Before the first change to a live schema, add versioned Alembic migrations, test forward/backward compatibility and create a backup. Encrypt backups; document retention and deletion. Rehearse restoration to a clean instance with the encryption key.
+Use `python -m alembic upgrade head` for production schema changes. Back up and verify a legacy pilot schema before stamping its initial revision; do not blindly apply fresh-schema operations to existing tables. Encrypt backups; document retention and deletion. Rehearse restoration to a clean instance with the encryption key.
 
-API health checks only the database. Instrument worker heartbeat, oldest queued/processing job, review count, webhook failures and billing/provider drift. Configure signed webhooks against the exact canonical HTTPS hostname, never a preview deployment. API and worker must use the same database, credentials and public URL.
+API health checks the database; readiness also checks the worker heartbeat and live configuration. Alert on oldest queued/processing job, review count, webhook failures and billing/provider drift. Configure signed webhooks against the exact canonical HTTPS hostname, never a preview deployment. API and worker must use the same database, credentials and public URL.

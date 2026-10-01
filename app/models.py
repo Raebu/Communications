@@ -35,6 +35,7 @@ class Tenant(Base):
     subscription: Mapped[str | None] = mapped_column(String(100), unique=True)
     checkout_sid: Mapped[str] = mapped_column(String(100), default='')
     checkout_plan: Mapped[str] = mapped_column(String(30), default='')
+    billing_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     billing_status: Mapped[str] = mapped_column(String(30), default='unpaid')
     plan: Mapped[str] = mapped_column(String(30), default='connect')
     spend_limit: Mapped[int] = mapped_column(Integer, default=2000)
@@ -48,6 +49,11 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(254), unique=True)
     password: Mapped[str] = mapped_column(Text)
     role: Mapped[str] = mapped_column(String(20), default='owner')
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    mfa_secret: Mapped[str] = mapped_column(Text, default='')
+    mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    mfa_counter: Mapped[int] = mapped_column(Integer, default=-1)
+    mfa_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     platform_admin: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
@@ -56,6 +62,7 @@ class Session(Base):
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey('users.id'))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    mfa_authenticated: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class Number(Base):
@@ -136,6 +143,42 @@ class RateBucket(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
-engine = create_engine(settings.database_url, pool_pre_ping=True,
+engine = create_engine(settings.database_url, pool_pre_ping=True, hide_parameters=True,
                        **({'connect_args': {'check_same_thread': False}} if settings.database_url.startswith('sqlite') else {}))
 DB = sessionmaker(engine, expire_on_commit=False)
+
+
+class ActionToken(Base):
+    __tablename__ = 'action_tokens'
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'), index=True)
+    purpose: Mapped[str] = mapped_column(String(20))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class EmailJob(Base):
+    __tablename__ = 'email_jobs'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    recipient: Mapped[str] = mapped_column(String(254))
+    encrypted_payload: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default='queued')
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class WorkerHeartbeat(Base):
+    __tablename__ = 'worker_heartbeats'
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class Call(Base):
+    __tablename__ = 'calls'
+    sid: Mapped[str] = mapped_column(String(40), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id'), index=True)
+    number_id: Mapped[str] = mapped_column(ForeignKey('numbers.id'))
+    destination: Mapped[str] = mapped_column(String(20))
+    reserved_minutes: Mapped[int] = mapped_column(Integer)
+    billed_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(30), default='reserved')
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

@@ -1,0 +1,18 @@
+{$SERVICE_HOSTNAME} {
+    encode zstd gzip
+    request_body {
+        max_size 64KB
+    }
+    reverse_proxy api:8000
+    log {
+        output file /data/access.log
+        format filter {
+            wrap json
+            fields {
+                request>uri delete
+                request>headers delete
+                request>remote_ip delete
+            }
+        }
+    }
+}

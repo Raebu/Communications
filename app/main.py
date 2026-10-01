@@ -13,10 +13,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from twilio.request_validator import RequestValidator
 from .config import settings
-from .models import Audit, Base, DB, Event, Message, Number, Order, Session, Suppression, Tenant, User, engine, now
+from .models import Call, WorkerHeartbeat, Audit, Base, DB, Event, Message, Number, Order, Session, Suppression, Tenant, User, engine, now
 from .providers import create_subaccount, parent_client, tenant_client
-from .security import csrf, current_user, decrypt, hash_password, rate_limit, verify_password
+from .security import csrf, current_user, decrypt, hash_password, rate_limit, verify_password, verify_totp
 from .worker import within_budget
+from .accounts import router as accounts_router, queue_action
+from .billing import client as billing_client, integration_identifier, reconcile_subscription, subscription_from_invoice
 
 
 @asynccontextmanager
@@ -27,14 +29,19 @@ async def lifespan(app):
     yield
 
 
-app = FastAPI(title='Raeburn Communications', version='0.1.0', lifespan=lifespan)
+app = FastAPI(title='Raeburn Communications', version='0.2.0', lifespan=lifespan)
+app.include_router(accounts_router)
 app.mount('/static', StaticFiles(directory='app/static'), name='static')
 
 
 @app.middleware('http')
 async def security_headers(request, call_next):
-    if int(request.headers.get('content-length', '0')) > 65536:
-        return Response(status_code=413)
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > 65536:
+            return Response(status_code=413)
+        body.extend(chunk)
+    request._body = bytes(body)
     response = await call_next(request)
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'DENY'
@@ -61,6 +68,7 @@ def health():
 class Credentials(BaseModel):
     email: EmailStr
     password: str = Field(min_length=12, max_length=128)
+    totp: str = Field(default='', max_length=6)
 
 
 class Registration(Credentials):
@@ -77,10 +85,14 @@ def register(data: Registration, request: Request):
         raise HTTPException(422, 'Accept the service terms')
     try:
         with DB.begin() as db:
-            tenant = Tenant(name=data.company, terms_version='2026-10-draft')
+            tenant = Tenant(name=data.company, terms_version=settings.terms_version or '2026-10-draft')
             db.add(tenant)
             db.flush()
-            db.add(User(tenant_id=tenant.id, email=str(data.email).lower(), password=hash_password(data.password)))
+            user = User(tenant_id=tenant.id, email=str(data.email).lower(), password=hash_password(data.password))
+            db.add(user)
+            db.flush()
+            if settings.smtp_host and settings.encryption_key:
+                queue_action(db, user, 'verify')
     except IntegrityError:
         raise HTTPException(409, 'Unable to create this account')
     return {'status': 'created'}
@@ -90,11 +102,16 @@ def register(data: Registration, request: Request):
 def login(data: Credentials, request: Request, response: Response):
     rate_limit('login:' + request.client.host, 10)
     with DB.begin() as db:
-        user = db.scalar(select(User).where(User.email == str(data.email).lower()))
+        user = db.scalar(select(User).where(User.email == str(data.email).lower()).with_for_update())
         if not user or not verify_password(data.password, user.password):
             raise HTTPException(401, 'Invalid email or password')
+        if user.mfa_enabled:
+            step = verify_totp(decrypt(user.mfa_secret)['secret'], data.totp, user.mfa_counter)
+            if step is None:
+                raise HTTPException(401, 'Valid authenticator code required')
+            user.mfa_counter = step
         token = secrets.token_urlsafe(48)
-        db.add(Session(token_hash=hashlib.sha256(token.encode()).hexdigest(), user_id=user.id, expires_at=now() + timedelta(hours=12)))
+        db.add(Session(token_hash=hashlib.sha256(token.encode()).hexdigest(), user_id=user.id, mfa_authenticated=user.mfa_enabled, expires_at=now() + timedelta(hours=12)))
         response.set_cookie('session', token, httponly=True, secure=settings.environment == 'production', samesite='strict', max_age=43200)
     return {'status': 'signed_in'}
 
@@ -121,7 +138,7 @@ def audit(db, user, action, detail=''):
 def me(user=Depends(current_user)):
     with DB() as db:
         t = db.get(Tenant, user.tenant_id)
-        return {'email': user.email, 'role': user.role, 'platform_admin': user.platform_admin,
+        return {'email': user.email, 'role': user.role, 'platform_admin': user.platform_admin, 'email_verified': user.email_verified, 'mfa_enabled': user.mfa_enabled,
                 'tenant': {'id': t.id, 'name': t.name, 'legal_name': t.legal_name, 'address': t.address,
                            'registration_number': t.registration_number, 'status': t.status,
                            'billing_status': t.billing_status, 'plan': t.plan, 'connected': bool(t.twilio_sid)}}
@@ -153,6 +170,8 @@ class Search(BaseModel):
 
 @app.get('/api/numbers/search')
 def search(type: Literal['Local', 'Mobile', 'TollFree'] = 'Local', contains: str = '', user=Depends(current_user)):
+    if len(contains) > 12 or (contains and not contains.isascii()) or (contains and not contains.isdigit()):
+        raise HTTPException(422, 'Search accepts up to 12 digits')
     query = Search(type=type, contains=contains)
     rate_limit('search:' + user.tenant_id, 15)
     available = getattr(parent_client().available_phone_numbers('GB'), {'Local': 'local', 'Mobile': 'mobile', 'TollFree': 'toll_free'}[query.type])
@@ -179,26 +198,36 @@ class Purchase(BaseModel):
 def purchase(data: Purchase, user=Depends(current_user)):
     require_owner(user)
     rate_limit('purchase:' + user.tenant_id, 5)
-    with DB.begin() as db:
-        t = db.scalar(select(Tenant).where(Tenant.id == user.tenant_id).with_for_update())
-        existing = db.scalar(select(Order).where(Order.tenant_id == t.id, Order.request_key == data.request_key))
-        if existing:
-            if existing.phone != data.phone or existing.number_type != data.type:
-                raise HTTPException(409, 'Idempotency key belongs to a different order')
-            return {'id': existing.id, 'status': existing.status}
-        if t.status != 'approved' or not t.bundle_sid or t.bundle_type != data.type:
-            raise HTTPException(409, 'Approved regulatory bundle for this number type required')
-        if t.billing_status != 'active':
-            raise HTTPException(402, 'Active paid subscription required')
-        if not t.twilio_sid:
-            raise HTTPException(409, 'Communications account must be connected')
-        if db.scalar(select(Number).where(Number.tenant_id == t.id)) or db.scalar(select(Order).where(Order.tenant_id == t.id, Order.status.in_(['queued', 'processing', 'review']))):
-            raise HTTPException(409, 'One number per subscription; contact support for additional numbers')
-        order = Order(tenant_id=t.id, phone=data.phone, number_type=data.type, request_key=data.request_key)
-        db.add(order)
-        db.flush()
-        audit(db, user, 'number.order.created', order.id)
-        return {'id': order.id, 'status': order.status}
+    try:
+        with DB.begin() as db:
+            t = db.scalar(select(Tenant).where(Tenant.id == user.tenant_id).with_for_update())
+            existing = db.scalar(select(Order).where(Order.tenant_id == t.id, Order.request_key == data.request_key))
+            if existing:
+                if existing.phone != data.phone or existing.number_type != data.type:
+                    raise HTTPException(409, 'Idempotency key belongs to a different order')
+                return {'id': existing.id, 'status': existing.status}
+            if t.status != 'approved' or not t.bundle_sid or t.bundle_type != data.type:
+                raise HTTPException(409, 'Approved regulatory bundle for this number type required')
+            if t.billing_status != 'active':
+                raise HTTPException(402, 'Active paid subscription required')
+            if not t.twilio_sid:
+                raise HTTPException(409, 'Communications account must be connected')
+            if db.scalar(select(Number).where(Number.tenant_id == t.id)) or db.scalar(select(Order).where(Order.tenant_id == t.id, Order.status.in_(['queued', 'processing', 'review']))):
+                winner = db.scalar(select(Order).where(Order.tenant_id == t.id, Order.request_key == data.request_key))
+                if winner and winner.phone == data.phone and winner.number_type == data.type:
+                    return {'id': winner.id, 'status': winner.status}
+                raise HTTPException(409, 'One number per subscription; contact support for additional numbers')
+            order = Order(tenant_id=t.id, phone=data.phone, number_type=data.type, request_key=data.request_key)
+            db.add(order)
+            db.flush()
+            audit(db, user, 'number.order.created', order.id)
+            return {'id': order.id, 'status': order.status}
+    except IntegrityError:
+        with DB() as db:
+            existing = db.scalar(select(Order).where(Order.tenant_id == user.tenant_id, Order.request_key == data.request_key))
+            if existing and existing.phone == data.phone and existing.number_type == data.type:
+                return {'id': existing.id, 'status': existing.status}
+        raise HTTPException(409, 'Conflicting activation request')
 
 
 @app.get('/api/orders')
@@ -219,7 +248,7 @@ def checkout(data: Checkout, user=Depends(current_user)):
         raise HTTPException(409, 'AI plan is not available until AI and booking integrations pass launch checks')
     if not settings.stripe_key or not price:
         raise HTTPException(503, 'Billing is not configured')
-    stripe.api_key = settings.stripe_key
+    stripe_client = billing_client()
     with DB.begin() as db:
         t = db.scalar(select(Tenant).where(Tenant.id == user.tenant_id).with_for_update())
         if t.billing_status == 'active':
@@ -227,7 +256,7 @@ def checkout(data: Checkout, user=Depends(current_user)):
         if t.status != 'approved':
             raise HTTPException(409, 'Complete regulatory review before subscribing')
         if t.checkout_sid:
-            prior = stripe.checkout.Session.retrieve(t.checkout_sid)
+            prior = stripe_client.v1.checkout.sessions.retrieve(t.checkout_sid)
             if prior.status == 'open':
                 if t.checkout_plan != data.plan:
                     raise HTTPException(409, 'An existing checkout is open for a different plan; complete or expire it first')
@@ -235,14 +264,14 @@ def checkout(data: Checkout, user=Depends(current_user)):
             if prior.status == 'complete':
                 raise HTTPException(409, 'Payment is processing; wait for subscription confirmation')
         if not t.stripe_customer:
-            customer = stripe.Customer.create(email=user.email, name=t.name, metadata={'tenant_id': t.id}, idempotency_key='customer:' + t.id)
+            customer = stripe_client.v1.customers.create({'email': user.email, 'name': t.name}, {'idempotency_key': 'customer:' + t.id})
             t.stripe_customer = customer.id
-        session = stripe.checkout.Session.create(customer=t.stripe_customer, mode='subscription',
-            line_items=[{'price': price, 'quantity': 1}], client_reference_id=t.id,
-            subscription_data={'metadata': {'tenant_id': t.id, 'plan': data.plan}},
-            metadata={'tenant_id': t.id, 'plan': data.plan},
-            success_url=settings.public_url + '/?billing=success', cancel_url=settings.public_url + '/?billing=cancel',
-            idempotency_key='checkout:' + t.id + ':' + data.plan + ':' + (t.checkout_sid or 'initial'))
+        session = stripe_client.v1.checkout.sessions.create({
+            'customer': t.stripe_customer, 'mode': 'subscription',
+            'line_items': [{'price': price, 'quantity': 1}], 'client_reference_id': t.id,
+            'integration_identifier': integration_identifier(t.id + data.plan + (t.checkout_sid or 'initial')),
+            'success_url': settings.public_url + '/?billing=success', 'cancel_url': settings.public_url + '/?billing=cancel',
+        }, {'idempotency_key': 'checkout:' + t.id + ':' + data.plan + ':' + (t.checkout_sid or 'initial')})
         t.checkout_sid, t.checkout_plan = session.id, data.plan
         audit(db, user, 'billing.checkout.created', session.id)
         return {'url': session.url}
@@ -253,12 +282,12 @@ def portal(user=Depends(current_user)):
     require_owner(user)
     if not settings.stripe_key:
         raise HTTPException(503, 'Billing is not configured')
-    stripe.api_key = settings.stripe_key
+    stripe_client = billing_client()
     with DB() as db:
         t = db.get(Tenant, user.tenant_id)
         if not t.stripe_customer:
             raise HTTPException(409, 'No billing account')
-        return {'url': stripe.billing_portal.Session.create(customer=t.stripe_customer, return_url=settings.public_url).url}
+        return {'url': stripe_client.v1.billing_portal.sessions.create({'customer': t.stripe_customer, 'return_url': settings.public_url}).url}
 
 
 @app.post('/webhooks/stripe')
@@ -272,32 +301,26 @@ async def stripe_webhook(request: Request):
         raise HTTPException(403, 'Invalid signature')
     obj = event['data']['object']
     kind = event['type']
-    if not kind.startswith('customer.subscription.'):
+    stripe_client = billing_client()
+    subscription_id = None
+    if kind.startswith('customer.subscription.'):
+        subscription_id = obj['id']
+    elif kind in {'invoice.paid', 'invoice.payment_failed'}:
+        subscription_id = subscription_from_invoice(obj)
+    elif kind in {'checkout.session.completed', 'checkout.session.async_payment_succeeded'}:
+        checkout = stripe_client.v1.checkout.sessions.retrieve(obj['id'])
+        subscription_id = checkout.subscription
+    if not subscription_id:
         return {'received': True}
-    # Retrieve current state: webhook delivery order is not authoritative.
-    stripe.api_key = settings.stripe_key
-    subscription = stripe.Subscription.retrieve(obj['id'], expand=['latest_invoice'])
+    subscription = stripe_client.v1.subscriptions.retrieve(subscription_id, {'expand': ['latest_invoice']})
     with DB.begin() as db:
-        t = db.scalar(select(Tenant).where(Tenant.stripe_customer == subscription['customer']).with_for_update())
-        if not t:
+        tenant = db.scalar(select(Tenant).where(Tenant.stripe_customer == subscription['customer']).with_for_update())
+        if not tenant:
             raise HTTPException(409, 'Unknown billing customer')
         if db.get(Event, event['id']):
             return {'received': True}
-        metadata = subscription.get('metadata', {})
-        if metadata.get('tenant_id') != t.id:
-            raise HTTPException(409, 'Subscription ownership mismatch')
-        prices = {settings.business_price: 'business', settings.connect_price: 'connect'}
-        price_id = subscription['items']['data'][0]['price']['id']
-        if not price_id or price_id not in prices:
-            raise HTTPException(409, 'Unrecognised plan price')
-        if t.subscription and t.subscription != subscription['id']:
-            raise HTTPException(409, 'Multiple subscriptions require reconciliation')
-        t.subscription, t.plan = subscription['id'], prices[price_id]
-        invoice = subscription.get('latest_invoice')
-        paid = hasattr(invoice, 'get') and invoice.get('paid') is True
-        t.billing_status = ('active' if paid else 'unpaid') if subscription['status'] == 'active' else subscription['status']
-        t.checkout_sid, t.checkout_plan = '', ''
-        db.add(Event(id=event['id'], tenant_id=t.id, kind=kind))
+        reconcile_subscription(db, subscription)
+        db.add(Event(id=event['id'], tenant_id=tenant.id, kind=kind))
     return {'received': True}
 
 
@@ -355,6 +378,10 @@ def send(data: Send, user=Depends(current_user)):
         daily = db.scalars(select(Message).where(Message.tenant_id == t.id, Message.direction == 'outbound', Message.created_at >= day)).all()
         if sum(segment_count(m.body) for m in daily) + segment_count(data.body) > 100:
             raise HTTPException(429, 'Daily SMS allowance reached')
+        month = day.replace(day=1)
+        monthly = db.scalars(select(Message).where(Message.tenant_id == t.id, Message.direction == 'outbound', Message.created_at >= month)).all()
+        if sum(segment_count(m.body) for m in monthly) + segment_count(data.body) > settings.sms_monthly_segments:
+            raise HTTPException(429, 'Monthly SMS allowance reached')
         m = Message(tenant_id=t.id, number_id=n.id, peer=data.peer, direction='outbound', body=data.body, request_key=data.request_key)
         db.add(m)
         db.flush()
@@ -369,7 +396,7 @@ def segment_count(body):
 
 
 class Forwarding(BaseModel):
-    destination: str = Field(default='', pattern=r'^(\+44[127]\d{8,9})?$')
+    destination: str = Field(default='', pattern=r'^(\+44(?:[12]\d{9}|7[1-57-9]\d{8}))?$')
 
 
 @app.put('/api/numbers/{number_id}/forwarding', dependencies=[Depends(csrf)])
@@ -445,17 +472,76 @@ async def message_status(request: Request):
 @app.post('/webhooks/twilio/voice')
 async def voice(request: Request):
     tenant_id, p = await validate_twilio(request)
-    with DB() as db:
-        t = db.get(Tenant, tenant_id)
+    with DB.begin() as db:
+        t = db.scalar(select(Tenant).where(Tenant.id == tenant_id).with_for_update())
         n = db.scalar(select(Number).where(Number.tenant_id == t.id, Number.phone == p.get('To')))
-        allowed = False
-        if n and n.voice and n.forwarding and t.billing_status == 'active' and t.status == 'approved':
-            allowed = within_budget(tenant_client(t), t)
-        if allowed:
-            xml = '<Response><Dial timeout="20" timeLimit="1800"><Number>' + escape(n.forwarding) + '</Number></Dial></Response>'
+        sid = p.get('CallSid', '')
+        allowed = n and n.voice and n.forwarding and sid and t.billing_status == 'active' and t.status == 'approved'
+        call = db.get(Call, sid) if sid else None
+        if call and (not n or call.tenant_id != t.id or call.number_id != n.id):
+            raise HTTPException(409, 'Call ownership mismatch')
+        minutes = call.reserved_minutes if call else 0
+        if allowed and not call:
+            month = now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            calls = db.scalars(select(Call).where(Call.tenant_id == t.id, Call.created_at >= month)).all()
+            committed = sum(c.billed_minutes if c.status == 'completed' else c.reserved_minutes for c in calls)
+            minutes = min(10, max(0, settings.voice_monthly_minutes - committed))
+            allowed = minutes > 0 and within_budget(tenant_client(t), t)
+            if allowed:
+                call = Call(sid=sid, tenant_id=t.id, number_id=n.id, destination=n.forwarding, reserved_minutes=minutes)
+                db.add(call)
+        elif call and call.status == 'completed':
+            allowed = False
+        if allowed and minutes:
+            destination = call.destination
+            callback = settings.public_url + '/webhooks/twilio/voice-status'
+            xml = ('<Response><Dial timeout="20" timeLimit="' + str(minutes * 60) + '" action="' + escape(callback, {'"': '&quot;'})
+                   + '" method="POST"><Number>' + escape(destination) + '</Number></Dial></Response>')
         else:
             xml = '<Response><Say>This business is currently unavailable. Please try again later.</Say></Response>'
     return Response(xml, media_type='application/xml')
+
+
+@app.post('/webhooks/twilio/voice-status')
+async def voice_status(request: Request):
+    tenant_id, p = await validate_twilio(request)
+    with DB.begin() as db:
+        call = db.scalar(select(Call).where(Call.sid == p.get('CallSid'), Call.tenant_id == tenant_id).with_for_update())
+        if not call:
+            raise HTTPException(404, 'Call not found')
+        try:
+            seconds = int(p.get('DialCallDuration', '0'))
+        except ValueError:
+            raise HTTPException(422, 'Invalid call duration')
+        if seconds < 0 or seconds > call.reserved_minutes * 60 + 60:
+            raise HTTPException(422, 'Call duration outside reservation')
+        if call.status != 'completed':
+            call.billed_minutes, call.status = (seconds + 59) // 60, 'completed'
+    return Response('<Response/>', media_type='application/xml')
+
+
+@app.get('/api/usage')
+def usage(user=Depends(current_user)):
+    with DB() as db:
+        month = now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        sms = db.scalars(select(Message).where(Message.tenant_id == user.tenant_id, Message.direction == 'outbound', Message.created_at >= month)).all()
+        calls = db.scalars(select(Call).where(Call.tenant_id == user.tenant_id, Call.created_at >= month)).all()
+        return {'sms_segments': sum(segment_count(m.body) for m in sms), 'sms_allowance': settings.sms_monthly_segments,
+                'voice_minutes': sum(c.billed_minutes if c.status == 'completed' else c.reserved_minutes for c in calls),
+                'voice_allowance': settings.voice_monthly_minutes}
+
+
+@app.get('/ready')
+def ready(response: Response):
+    with DB() as db:
+        heartbeat = db.scalar(select(WorkerHeartbeat).order_by(WorkerHeartbeat.seen_at.desc()).limit(1))
+        alive = heartbeat and heartbeat.seen_at.replace(tzinfo=now().tzinfo) > now() - timedelta(seconds=90)
+    checks = {'database': True, 'worker': bool(alive), 'twilio': bool(settings.twilio_sid and settings.twilio_api_key and settings.twilio_api_secret),
+              'stripe_live': settings.stripe_key.startswith(('rk_live_', 'sk_live_')) and bool(settings.stripe_webhook_secret),
+              'email': bool(settings.smtp_host and settings.email_from), 'public_sales': settings.public_sales_enabled}
+    if not all(checks.values()):
+        response.status_code = 503
+    return {'ready': all(checks.values()), 'checks': checks}
 
 
 @app.get('/api/admin/tenants')
@@ -508,3 +594,11 @@ def approve(tenant_id: str, data: Approval, user=Depends(current_user)):
         t.status, t.bundle_sid, t.address_sid, t.bundle_type = 'approved', data.bundle_sid, data.address_sid, data.type
         db.add(Audit(tenant_id=t.id, actor=user.id, action='compliance.approved', detail=data.bundle_sid))
     return {'status': 'approved'}
+
+
+@app.get('/api/service')
+def service_info():
+    return {'legal_name': settings.legal_business_name, 'address': settings.legal_business_address,
+            'support_email': settings.support_email, 'terms_url': settings.terms_url, 'privacy_url': settings.privacy_url,
+            'terms_version': settings.terms_version, 'registration_open': settings.registration_enabled,
+            'sms_monthly_segments': settings.sms_monthly_segments, 'voice_monthly_minutes': settings.voice_monthly_minutes}

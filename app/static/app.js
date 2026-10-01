@@ -14,15 +14,18 @@ function button(text, fn, secondary = false) { const b = element('button', text,
 function show(view) { document.querySelectorAll('.view').forEach(e => e.hidden = e.id !== view); document.querySelectorAll('nav button').forEach(e => e.classList.toggle('active', e.dataset.view === view)); if (view === 'inbox') act(loadThreads); if (view === 'admin') act(loadAdmin); }
 document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => show(b.dataset.view));
 $('#auth-toggle').onclick = () => { registering = !registering; $('#register-fields').hidden = !registering; $('#auth-submit').textContent = registering ? 'Create account' : 'Sign in'; $('#auth-toggle').textContent = registering ? 'I already have an account' : 'Create an account'; };
-$('#auth-form').onsubmit = e => { e.preventDefault(); act(async () => { const data = fields(e.target); if (registering) { data.accept_terms = Boolean(data.accept_terms); await api('/api/register', 'POST', data); } await api('/api/login', 'POST', { email: data.email, password: data.password }); await load(); }); };
+$('#auth-form').onsubmit = e => { e.preventDefault(); act(async () => { const data = fields(e.target); if (registering) { data.accept_terms = Boolean(data.accept_terms); await api('/api/register', 'POST', data); } await api('/api/login', 'POST', { email: data.email, password: data.password, totp: data.totp || '' }); await load(); }); };
 $('#logout').onclick = () => act(async () => { await api('/api/logout', 'POST'); location.reload(); });
 async function load() {
-  me = await api('/api/me'); owned = await api('/api/numbers');
+  me = await api('/api/me'); owned = []; try { owned = await api('/api/numbers'); } catch(error) { notice(error.message); }
   $('#auth').hidden = true; $('#workspace').hidden = false; $('#logout').hidden = false; $('#admin-nav').hidden = !me.platform_admin;
   $('#company').textContent = me.tenant.name; $('#review-status').textContent = me.tenant.status; $('#billing-status').textContent = me.tenant.billing_status; $('#number-count').textContent = owned.length;
   $('#next-step').textContent = me.tenant.status !== 'approved' ? 'Complete your legal business profile. Our team will review it and guide your number registration.' : me.tenant.billing_status !== 'active' ? 'Choose your subscription, then search for an available number.' : owned.length ? 'Set up call forwarding and start managing your conversations.' : 'Search for your UK number and submit an activation request.';
   for (const key of ['legal_name', 'address', 'registration_number']) $('#profile-form').elements[key].value = me.tenant[key] || '';
-  renderNumbers(); await loadOrders(); show('overview');
+  $('#account-verification').textContent = `Email: ${me.email_verified ? 'verified' : 'verification required'} · Authenticator: ${me.mfa_enabled ? 'enabled' : 'not enabled'}`;
+  renderNumbers();
+  if (me.email_verified) { const usage = await api('/api/usage'); $('#usage-summary').textContent = `${usage.sms_segments}/${usage.sms_allowance} SMS segments · ${usage.voice_minutes}/${usage.voice_allowance} call minutes this month`; }
+  try { await loadOrders(); } catch(error) { notice(error.message); } show(me.email_verified ? 'overview' : 'account');
 }
 $('#profile-form').onsubmit = e => { e.preventDefault(); act(async () => { await api('/api/profile', 'PUT', fields(e.target)); await load(); notice('Business details submitted for review.'); }); };
 $('#search-form').onsubmit = e => { e.preventDefault(); act(async () => {
@@ -60,5 +63,20 @@ async function loadAdmin() {
   for (const t of tenants) { const card=element('article',undefined,'customer'); card.append(element('h2',t.name),element('p',`${t.legal_name} · ${t.address} · ${t.status} · billing ${t.billing_status}`)); if (!t.connected) card.append(button('Connect Twilio subaccount',async()=>{await api(`/api/admin/tenants/${t.id}/connect`,'POST');await loadAdmin();}));
     const form=element('form'); const bundle=element('input'); bundle.placeholder='Approved BU bundle SID'; bundle.required=true; const address=element('input'); address.placeholder='AD address SID (where required)'; const type=element('select'); for (const v of ['Local','Mobile','TollFree']) type.append(element('option',v)); const submit=element('button','Verify bundle and approve'); submit.type='submit'; form.append(bundle,address,type,submit); form.onsubmit=e=>{e.preventDefault();act(async()=>{await api(`/api/admin/tenants/${t.id}/approve`,'POST',{bundle_sid:bundle.value,address_sid:address.value,type:type.value});await loadAdmin();});}; card.append(form); $('#admin-customers').append(card); }
 }
-api('/api/me').then(load).catch(()=>{});
+if (!new URLSearchParams(location.search).get('token')) api('/api/me').then(load).catch(()=>{});
 setInterval(()=>{if(me&&!$('#inbox').hidden)act(async()=>{await loadThreads();await loadMessages();});},15000);
+
+$('#forgot-password').onclick = () => act(async () => { const email = $('#auth-form').elements.email.value; if (!email) throw Error('Enter your account email first.'); await api('/api/security/request/reset', 'POST', {email}); notice('If this account is eligible, a recovery email will arrive shortly.'); });
+$('#resend-verification').onclick = () => act(async () => { await api('/api/security/request/verify','POST',{email:me.email}); notice('Verification email requested.'); });
+$('#setup-mfa').onclick = () => act(async () => { const value=await api('/api/security/mfa/setup','POST'); $('#mfa-secret').textContent=value.secret; $('#mfa-enrolment').hidden=false; });
+$('#mfa-form').onsubmit = e => { e.preventDefault(); act(async()=>{await api('/api/security/mfa/confirm','POST',fields(e.target)); $('#mfa-enrolment').hidden=true; $('#mfa-secret').textContent=''; location.assign('/?mfa=enabled');}); };
+const actionParams = new URLSearchParams(location.search);
+const action = actionParams.get('action');
+const actionToken = actionParams.get('token');
+if (actionToken && ['verify','reset'].includes(action)) {
+  history.replaceState(null,'',location.pathname);
+  $('#auth-form').hidden=true; $('#forgot-password').hidden=true; $('#recovery-form').hidden=false;
+  $('#new-password-label').hidden=action==='verify'; $('#recovery-title').textContent=action==='verify'?'Verify your email':'Set a new password';
+  $('#recovery-form').onsubmit=e=>{e.preventDefault();act(async()=>{await api('/api/security/complete/'+action,'POST',{token:actionToken,password:fields(e.target).password||''}); location.assign('/');});};
+}
+api('/api/service').then(s=>{for(const [id,url] of [['terms-link',s.terms_url],['privacy-link',s.privacy_url]]){if(url&&url.startsWith('https://'))$( '#'+id).href=url;}$('#auth-toggle').hidden=!s.registration_open;}).catch(()=>{});

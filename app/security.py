@@ -38,7 +38,17 @@ def current_user(request: Request):
         session = db.get(Session, hashlib.sha256(token.encode()).hexdigest())
         if not session or session.expires_at.replace(tzinfo=now().tzinfo) < now():
             raise HTTPException(401, 'Sign in required')
-        return db.get(User, session.user_id)
+        user = db.get(User, session.user_id)
+        if settings.environment == 'production':
+            allowed = {'/api/me', '/api/logout', '/api/security/mfa/setup', '/api/security/mfa/confirm'}
+            if request.url.path not in allowed:
+                if not user.email_verified:
+                    raise HTTPException(403, 'Verify your email before continuing')
+                if user.mfa_enabled and not session.mfa_authenticated:
+                    raise HTTPException(403, 'Sign in again using your authenticator')
+                if user.platform_admin and not user.mfa_enabled:
+                    raise HTTPException(403, 'Enable authenticator MFA before accessing administration')
+        return user
 
 
 def csrf(request: Request):
@@ -50,14 +60,35 @@ def csrf(request: Request):
 
 
 def rate_limit(key, maximum=20):
-    # Durable counters shared by all API replicas; lock existing row in PostgreSQL.
+    # Upsert first so first-use races do not create duplicate rows.
     with DB.begin() as db:
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+        insert = pg_insert if db.bind.dialect.name == 'postgresql' else sqlite_insert
+        db.execute(insert(RateBucket).values(key=key, count=0, expires_at=now() + timedelta(minutes=1))
+                   .on_conflict_do_nothing(index_elements=['key']))
         row = db.scalar(select(RateBucket).where(RateBucket.key == key).with_for_update())
-        if row is None:
-            db.add(RateBucket(key=key, count=1, expires_at=now() + timedelta(minutes=1)))
-        elif row.expires_at.replace(tzinfo=now().tzinfo) < now():
+        if row.expires_at.replace(tzinfo=now().tzinfo) < now():
             row.count, row.expires_at = 1, now() + timedelta(minutes=1)
         elif row.count >= maximum:
             raise HTTPException(429, 'Too many requests; try again in one minute')
         else:
             row.count += 1
+
+
+def totp_code(secret, counter):
+    import struct
+    raw = base64.b32decode(secret)
+    digest = hmac.new(raw, struct.pack('>Q', counter), hashlib.sha1).digest()
+    offset = digest[-1] & 15
+    value = int.from_bytes(digest[offset:offset + 4], 'big') & 0x7fffffff
+    return str(value % 1000000).zfill(6)
+
+
+def verify_totp(secret, code, last_counter=-1, timestamp=None):
+    import time
+    counter = int((time.time() if timestamp is None else timestamp) // 30)
+    for step in (counter - 1, counter, counter + 1):
+        if step > last_counter and hmac.compare_digest(totp_code(secret, step), code):
+            return step
+    return None

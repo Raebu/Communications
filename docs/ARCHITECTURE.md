@@ -4,7 +4,7 @@
 
 A UK business communications application: customer subscriptions include a dedicated number, UK call forwarding, and (on Connect) SMS with a threaded inbox. The underlying number is provisioned for the customer's service, rather than sold as property. The application is an ISV with one Twilio subaccount per legal business. Parent-account billing remains Raeburn's responsibility; subaccounts do not remove shared commercial, fraud or platform risks.
 
-This repository was empty on 1 October 2026. No earlier SMS/AI application, database or sender registrations have been imported. This implementation is a pilot core, not an assertion that the full commercial platform has launched.
+This repository was empty on 1 October 2026. No earlier SMS/AI application, database or sender registrations have been imported. The UK numbers/calls/SMS release now includes commercial launch hardening described in [LAUNCH.md](LAUNCH.md). Live provider configuration and acceptance are still outstanding.
 
 ## System
 
@@ -64,23 +64,23 @@ States: customer `pending -> approved`; billing `unpaid -> active -> past_due/ca
 | Audit | Actor and action records without message bodies or credentials |
 | RateBucket | Shared durable rate limiting counters |
 
-Customer-facing number/message lookups always filter by authenticated tenant; the browser never supplies the effective tenant. Thread key is tenant, owned number, channel and remote peer. The inbox displays up to 1,000 recent messages to build threads and 200 messages per conversation; indexed pagination and persisted conversation counters are required for scale. Platform administration is separate from tenant-owner authorization. Team invitations, granular agent permissions, RLS and SSO/MFA are future work.
+Customer-facing number/message lookups always filter by authenticated tenant; the browser never supplies the effective tenant. Thread key is tenant, owned number, channel and remote peer. The inbox displays up to 1,000 recent messages to build threads and 200 messages per conversation; indexed pagination and persisted conversation counters are required for scale. Platform administration is separate from tenant-owner authorization. Authenticator MFA, verified email and account recovery are implemented. Team invitations, granular agent permissions, RLS and SSO are future work.
 
 ## Messaging, callbacks and forwarding
 
-SMS outbound request commits a queued message before calling Twilio. Worker checks current subscription, approval, opt-outs and provider monthly USD usage before sending. UK destinations only; local daily conservative UCS-2 segment cap is 100. A provider timeout leaves `review` to avoid a duplicate SMS. A crash after marking `sending` requires manual reconciliation. There is deliberately no claim of exactly-once delivery across the provider boundary.
+SMS outbound request commits a queued message before calling Twilio. Worker checks current subscription, approval, opt-outs and provider monthly USD usage before sending. UK destinations only; local daily conservative UCS-2 segment cap is 100, with a configurable monthly allowance reserved on message creation. A provider timeout leaves `review` to avoid a duplicate SMS. A crash after marking `sending` requires manual reconciliation. There is deliberately no claim of exactly-once delivery across the provider boundary.
 
 Twilio callbacks use SDK validation with the customer's encrypted Auth Token and an explicitly configured canonical URL, including query string. Incoming SMS SID is deduplicated transactionally. STOP-family messages suppress the sender across the tenant; START/UNSTOP remove the suppression. Configure and test provider-side opt-out handling as well before production. Attachments, HELP automation, WhatsApp session/template rules and RCS callbacks are not implemented.
 
 Message status callbacks update matching tenant/provider SID only. Older states do not overwrite delivery; a callback arriving before the worker stores SID gets 503 so delivery is retried. Operators must still reconcile missing callbacks with provider logs.
 
-Calls receive signed inbound Voice webhooks. Approved, active customers can forward to configured UK 01/02/07 destinations, with a 20-second ring timeout and 30-minute maximum call duration. Monthly provider budget is checked before forwarding. Loop detection covers self-forwarding only. Provider cost totals lag; this is not a real-time hard financial guarantee. No call recordings, voicemail, call history, SIP/WebRTC dialler, outgoing calls, emergency calling, voice AI or call status ledger are shipped.
+Calls receive signed inbound Voice webhooks. Approved, active customers can forward to configured UK 01/02/07 destinations, with a 20-second ring timeout and up to ten reserved minutes per call from a configurable monthly allowance. Monthly provider budget is checked before forwarding. Loop detection covers self-forwarding only. Provider cost totals lag; this is not a real-time hard financial guarantee; local usage allowances and forwarding reservations additionally limit customer activity. A forwarding reservation/completion ledger is implemented. Call recordings, voicemail, a call-history UI, SIP/WebRTC dialler, outgoing calls, emergency calling and voice AI are not shipped.
 
 ## Billing and risk controls
 
 Hosted Stripe Checkout and Customer Portal keep card data outside Raeburn. Event signatures and tenant/customer ownership are verified. Subscription updates retrieve current state, so delivery order cannot revive a canceled account using an old payload. Unknown/multiple subscriptions require review rather than guessing ownership.
 
-Production controls still needed: periodic paid invoice reconciliation, recovery from completed checkouts whose webhook never arrives, complete refunds/proration/failed-payment flow, usage ledger reconciled to Twilio invoices, cost estimates and prepaid balance or credit limits, payment authentication rules and fraud detection. Default provider threshold is 2,000 USD cents monthly per tenant, including rental/usage, and is an emergency pilot ceiling, not the customer's price. Provider-side usage alerts and operator suspension are mandatory companions. Calls already running and provider reporting delays can exceed this value.
+Subscription/invoice reconciliation and completed-checkout recovery run periodically in the worker. Production expansion still needs refunds/dispute handling, reconciliation of local allowance usage to provider invoices, validated cost estimates, prepaid overages or credit limits, and further fraud detection. Default provider threshold is 2,000 USD cents monthly per tenant, including rental/usage, and is an emergency pilot ceiling, not the customer's price. Provider-side usage alerts and operator suspension are mandatory companions. Calls already running and provider reporting delays can exceed this value.
 
 ## AI and action integrations (full target architecture)
 
@@ -106,9 +106,9 @@ No mass outreach, number hoarding, unsupported OTP use or standalone number arbi
 
 ## Deployment and operations
 
-API + worker + managed PostgreSQL on a persistent host/container service (for example DigitalOcean). Use a TLS reverse proxy, database backups, private database connectivity, secret manager and restricted operator access. Vercel alone does not host this persistent worker design. A later Next.js frontend could be hosted separately, but would require a reviewed cross-origin auth strategy.
+API + worker + PostgreSQL on a persistent host/container service (for example DigitalOcean). Use a TLS reverse proxy, database backups, private database connectivity, secret manager and restricted operator access. Vercel alone does not host this persistent worker design. A later Next.js frontend could be hosted separately, but would require a reviewed cross-origin auth strategy.
 
-Initial schema creation is explicit (`python -m app.manage init-db`). Versioned migrations must replace `create_all` before altering a live schema. Do not apply destructive changes at web startup. `/health` checks database availability; add worker heartbeat and queue-age metrics before live service-level commitments. Ship redacted logs, alert on review orders/messages, failed webhook processing, budget breaches and payment drift. Back up PostgreSQL and encryption keys; rehearse restore and credential rotation.
+Production schema changes use explicit Alembic migrations (`python -m alembic upgrade head`). Development startup can create tables for local convenience. Existing pilot schemas need a verified baseline stamp before upgrade. Do not apply destructive changes at web startup. `/health` checks database availability and `/ready` checks configuration and worker heartbeat; add queue-age alerts before live service-level commitments. Ship redacted logs, alert on review orders/messages, failed webhook processing, budget breaches and payment drift. Back up PostgreSQL and encryption keys; rehearse restore and credential rotation.
 
 ## Sources checked on 1 October 2026
 
@@ -120,3 +120,7 @@ Initial schema creation is explicit (`python -m app.manage init-db`). Versioned 
 - https://docs.stripe.com/webhooks
 
 These inform provider integration choices; the launch workstream is a list of required assessments, not legal certification.
+
+## 0.2 commercial implementation update
+
+The first release is UK numbers, calls and SMS. Account verification, one-use password recovery, encrypted SMTP outbox, TOTP MFA (mandatory for administrators), migrated schemas, subscription/invoice reconciliation, monthly local allowances, forwarding reservations/callback ledger, worker heartbeat and production HTTPS/backup scripts are now implemented. Consult [LAUNCH.md](LAUNCH.md) for the current deployment/acceptance state. No live-provider acceptance has been inferred from mocked tests.

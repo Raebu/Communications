@@ -1,28 +1,16 @@
-import os
-import tempfile
-os.environ['DATABASE_URL'] = 'sqlite:///' + tempfile.mktemp(suffix='.db')
-os.environ['REGISTRATION_ENABLED'] = 'true'
 from unittest.mock import MagicMock
-import pytest
-from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from twilio.request_validator import RequestValidator
 from app.config import settings
 from app.main import app
-from app.models import Base, DB, Event, Message, Number, Order, Suppression, Tenant, engine
+from app.models import DB, Event, Message, Number, Order, Suppression, Tenant
 from app.security import encrypt
 from app.worker import provision_one, send_one
 
 HEADERS = {'origin': 'http://localhost:8000', 'x-requested-with': 'Raeburn'}
 
 
-@pytest.fixture(autouse=True)
-def database():
-    Base.metadata.drop_all(engine)
-    Base.metadata.create_all(engine)
-    settings.encryption_key = Fernet.generate_key().decode()
-    yield
 
 
 def customer(email='one@example.com'):
@@ -182,7 +170,9 @@ def test_subscription_webhook_requires_paid_invoice_and_uses_current_state(monke
     event={'id':'evt_test','type':'customer.subscription.updated','data':{'object':{'id':'sub_test','status':'active'}}}
     current={'id':'sub_test','customer':'cus_test','metadata':{'tenant_id':t},'items':{'data':[{'price':{'id':'price_connect'}}]},'status':'active','latest_invoice':{'paid':False}}
     monkeypatch.setattr('app.main.stripe.Webhook.construct_event',lambda *args:event)
-    monkeypatch.setattr('app.main.stripe.Subscription.retrieve',lambda *args,**kwargs:current)
+    client = MagicMock()
+    client.v1.subscriptions.retrieve.return_value = current
+    monkeypatch.setattr('app.main.billing_client',lambda:client)
     assert c.post('/webhooks/stripe',content='{}').status_code==200
     assert c.get('/api/me').json()['tenant']['billing_status']=='unpaid'
     event['id']='evt_paid'
