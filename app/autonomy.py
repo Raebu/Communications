@@ -273,6 +273,15 @@ def slots(db, d):
     reserved = db.scalars(
         select(Booking).where(Booking.department_id == d.id, Booking.status == "confirmed", Booking.ends_at > now())
     ).all()
+    from .integrations import calendar_for
+
+    external = []
+    provider = calendar_for(db, d)
+    if provider:
+        try:
+            external = provider.busy(start, start + timedelta(days=14))
+        finally:
+            provider.close()
     result = []
     for offset in range(14):
         day = start + timedelta(days=offset)
@@ -282,8 +291,12 @@ def slots(db, d):
         end = day + timedelta(hours=d.closes)
         while cursor + timedelta(minutes=d.duration) <= end:
             finish = cursor + timedelta(minutes=d.duration)
-            if cursor > now() + timedelta(hours=1) and not any(
-                b.starts_at.replace(tzinfo=timezone.utc) < finish and b.ends_at.replace(tzinfo=timezone.utc) > cursor for b in reserved
+            if (
+                cursor > now() + timedelta(hours=1)
+                and not any(a < finish and b > cursor for a, b in external)
+                and not any(
+                    b.starts_at.replace(tzinfo=timezone.utc) < finish and b.ends_at.replace(tzinfo=timezone.utc) > cursor for b in reserved
+                )
             ):
                 result.append(cursor.isoformat())
             cursor = finish
@@ -298,7 +311,16 @@ def perform_booking(db, t, c, payload, key):
     if previous:
         return previous
     starts = datetime.fromisoformat(payload["starts_at"])
-    if starts.tzinfo is None or starts.isoformat() not in slots(db, d):
+    from .integrations import calendar_for, GoogleCalendar
+
+    provider = calendar_for(db, d)
+    reconciled = None
+    if provider:
+        try:
+            reconciled = provider.get(GoogleCalendar.event_id(key))
+        finally:
+            provider.close()
+    if starts.tzinfo is None or (not reconciled and starts.isoformat() not in slots(db, d)):
         raise RuntimeError("Slot unavailable")
     b = Booking(
         tenant_id=t.id,
@@ -308,6 +330,12 @@ def perform_booking(db, t, c, payload, key):
         ends_at=(starts + timedelta(minutes=d.duration)).astimezone(timezone.utc),
         request_key=key,
     )
+    provider = calendar_for(db, d)
+    if provider:
+        try:
+            b.provider_id = provider.create(key, b.starts_at, b.ends_at, d.name + " appointment")
+        finally:
+            provider.close()
     db.add(b)
     db.flush()
     return b
@@ -339,7 +367,16 @@ def action_one():
                 )
                 if not b or b.status != "confirmed":
                     raise RuntimeError("Appointment unavailable")
+                from .integrations import calendar_for
+
+                department = db.get(Department, b.department_id)
                 if j.kind == "cancel":
+                    provider = calendar_for(db, department)
+                    if provider and b.provider_id:
+                        try:
+                            provider.cancel(b.provider_id)
+                        finally:
+                            provider.close()
                     b.status = "cancelled"
                 else:
                     d = db.scalar(
@@ -348,8 +385,15 @@ def action_one():
                     target = datetime.fromisoformat(payload["starts_at"])
                     if not d or not d.bookings_enabled or target.isoformat() not in slots(db, d):
                         raise RuntimeError("Slot unavailable")
-                    b.starts_at = target.astimezone(timezone.utc)
-                    b.ends_at = b.starts_at + timedelta(minutes=d.duration)
+                    proposed_start = target.astimezone(timezone.utc)
+                    proposed_end = proposed_start + timedelta(minutes=d.duration)
+                    provider = calendar_for(db, d)
+                    if provider and b.provider_id:
+                        try:
+                            provider.move(b.provider_id, proposed_start, proposed_end)
+                        finally:
+                            provider.close()
+                    b.starts_at, b.ends_at = proposed_start, proposed_end
                 receipt = {"booking_id": b.id, "starts_at": b.starts_at.isoformat(), "status": b.status}
             elif j.kind == "lead":
                 lead = db.scalar(select(Lead).where(Lead.conversation_id == c.id))
@@ -390,7 +434,7 @@ def action_one():
                     db.add(Audit(tenant_id=t.id, actor="ai", action="action.notification.blocked", detail=j.id))
             db.add(Audit(tenant_id=t.id, actor="ai", action="action.completed", detail=j.id))
         except Exception:
-            j.status, j.receipt = "failed", "Action unavailable; no success confirmation."
+            j.status, j.receipt = "review", "Action outcome needs reconciliation; no success confirmation or automatic retry."
     return True
 
 
@@ -432,7 +476,11 @@ def bookings(user=Depends(current_user)):
 def autonomous_answer(db, t, m, p, history, generate):
     c = conversation(db, m)
     departments = db.scalars(select(Department).where(Department.tenant_id == t.id, Department.bookings_enabled.is_(True))).all()
-    available = {d.id: {"name": d.name, "slots": slots(db, d)[:8]} for d in departments}
+    try:
+        available = {d.id: {"name": d.name, "slots": slots(db, d)[:8]} for d in departments}
+    except Exception:
+        c.mode, c.reason = "human", "invalid_ai_decision"
+        return "I am the AI receptionist. Appointment availability cannot be verified. A person needs to help."
     own = db.scalars(select(Booking).where(Booking.tenant_id == t.id, Booking.peer == c.peer, Booking.status == "confirmed")).all()
     active_bookings = {b.id: {"department_id": b.department_id, "starts_at": b.starts_at.isoformat()} for b in own}
     # Model proposes a bounded intent. Deterministic validation controls the actual effect.

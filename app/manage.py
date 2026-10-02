@@ -3,7 +3,7 @@
 import argparse
 import getpass
 from sqlalchemy import select
-from .models import Audit, Base, DB, Number, Order, Tenant, User, engine
+from .models import Audit, Base, DB, Integration, Department, Number, Order, Tenant, User, engine
 from .security import hash_password
 
 
@@ -27,6 +27,10 @@ def main():
     binding.add_argument("sender")
     binding.add_argument("--service-sid", default="")
     binding.add_argument("--approval-reference", required=True)
+    calendar = sub.add_parser("connect-google-calendar")
+    calendar.add_argument("department_id")
+    calendar.add_argument("calendar_id")
+    calendar.add_argument("--name", default="Google Calendar")
     args = parser.parse_args()
     if args.command == "check-config":
         from .config import settings
@@ -38,6 +42,41 @@ def main():
         Base.metadata.create_all(engine)
         return
     with DB.begin() as db:
+        if args.command == "connect-google-calendar":
+            from .integrations import GoogleCalendar
+            from .security import encrypt
+
+            department = db.get(Department, args.department_id)
+            if not department:
+                raise SystemExit("Department not found")
+            config = {
+                "calendar_id": args.calendar_id,
+                "client_id": getpass.getpass("OAuth client ID: "),
+                "client_secret": getpass.getpass("OAuth client secret: "),
+                "refresh_token": getpass.getpass("Authorised refresh token: "),
+            }
+            provider = GoogleCalendar(config)
+            try:
+                from .models import now
+                from datetime import timedelta
+
+                provider.busy(now(), now() + timedelta(days=1))
+            finally:
+                provider.close()
+            integration = Integration(
+                tenant_id=department.tenant_id,
+                kind="google_calendar",
+                name=args.name,
+                encrypted_config=encrypt(config),
+                enabled=True,
+                last_status="verified",
+            )
+            db.add(integration)
+            db.flush()
+            department.integration_id = integration.id
+            db.add(Audit(tenant_id=department.tenant_id, actor="operator-cli", action="calendar.connected", detail=department.id))
+            print("Tenant calendar connected. Credentials remain encrypted.")
+            return
         if args.command == "bind-sender":
             import re
 

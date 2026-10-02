@@ -265,6 +265,7 @@ class Department(Base):
     opens: Mapped[int] = mapped_column(Integer, default=9)
     closes: Mapped[int] = mapped_column(Integer, default=17)
     weekdays: Mapped[str] = mapped_column(String(20), default="0,1,2,3,4")
+    integration_id: Mapped[str | None] = mapped_column(ForeignKey("integrations.id", name="fk_department_integration"))
     bookings_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
@@ -278,6 +279,7 @@ class Booking(Base):
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(20), default="confirmed")
+    provider_id: Mapped[str] = mapped_column(String(100), default="")
     request_key: Mapped[str] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
@@ -304,4 +306,16 @@ class Lead(Base):
     conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), unique=True)
     summary: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="new")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class Integration(Base):
+    __tablename__ = "integrations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(30))
+    name: Mapped[str] = mapped_column(String(100))
+    encrypted_config: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_status: Mapped[str] = mapped_column(String(30), default="unverified")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from twilio.request_validator import RequestValidator
 from .config import settings
+from .integrations import router as integrations_router
 from .channels import enabled as channel_enabled
 from .ai import router as ai_router, start_voice, voice_turn, configured as ai_configured
 from .models import AIProfile, Conversation
@@ -40,6 +41,7 @@ app.include_router(ai_router)
 app.include_router(autonomy_router)
 
 app.include_router(relay_router)
+app.include_router(integrations_router)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
