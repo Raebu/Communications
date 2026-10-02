@@ -18,7 +18,7 @@ Department calendars are native to this application. Tenant locking and departme
 |---|---|---|
 | Natural voice | Signed ConversationRelay transport, model token streaming, interruption cancellation, zero transfer, bounded call/session, encrypted history | Live Twilio onboarding, voice latency/load and interruption acceptance; business actions over voice |
 | Autonomous channels | SMS and approved WhatsApp/RCS routing, automatic replies, isolated threads, opt-out, WhatsApp 24-hour window | Actual sender approvals/bindings, templates/rich media, channel-specific pricing |
-| Appointment management | Internal and authorised Google department calendars, booking, customer-confirmed cancellation/rescheduling, conflict prevention, receipts | Self-service Google OAuth, Microsoft Calendar, holidays/leave, reminders |
+| Appointment management | Internal and authorised Google department calendars, booking, customer-confirmed cancellation/rescheduling, conflict prevention, receipts, explicit-consent SMS reminders | Self-service Google OAuth, Microsoft Calendar, holidays/leave |
 | Knowledge | Approved owner-entered sources, expiry checks, relevance ranking, source IDs/versions | Safe website/PDF ingestion, refresh jobs, immutable version history, stronger retrieval/citations |
 | Customer memory | Bounded same-thread context and encrypted voice session history | Verified cross-channel identity, preference memory, privacy retention/deletion flows |
 | Business actions | Internal leads/CRM inbox, requested platform-SMTP outbox, durable receipts | External CRM connectors, tenant-owned email OAuth/domains, support-ticket integrations |
@@ -66,3 +66,9 @@ The table is intentionally explicit: code for one item does not mean every expan
 - Twilio ConversationRelay noun: https://www.twilio.com/docs/voice/twiml/connect/conversationrelay
 - Twilio WhatsApp service window: https://www.twilio.com/docs/whatsapp/api
 - Twilio RCS messaging: https://www.twilio.com/docs/rcs/send-an-rcs-message
+
+## Consented appointment reminders
+
+The booking receipt offers `REMIND <booking UUID>`. Only a signed inbound SMS from the booking's customer thread can authorise a single reminder, and the appointment must be more than 24 hours away. Repeated consent commands do not create repeated reminders. The durable worker schedules it 24 hours before the appointment, defers during UK quiet hours (20:00–09:00), and cancels stale reminders after cancellation/rescheduling or after the appointment. A rescheduled appointment requires fresh consent. Current billing, opt-out, pause, takeover and message limits are rechecked before enqueue and provider submission. Receipt means queued, not delivered. No marketing follow-up is inferred from booking consent.
+
+Migration `0007` adds the indexed due time. Department settings can now be updated through the owner-only API; changes do not silently move existing appointments. The operations failure count includes actions requiring outcome review.

@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 import json
+import hashlib
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException
@@ -75,6 +76,36 @@ def inbound_ai(db, t, m):
     if m.body.strip().upper() in {"HUMAN", "AGENT", "PERSON", "OPERATOR"}:
         c.mode, c.reason = "human", "customer_requested"
         db.add(Audit(tenant_id=t.id, actor="customer", action="conversation.handoff", detail=c.id))
+        return
+    if m.body.strip().startswith("REMIND ") and can_automate(db, t, m, p):
+        booking_id = m.body.strip()[7:]
+        b = db.scalar(
+            select(Booking).where(
+                Booking.id == booking_id, Booking.tenant_id == t.id, Booking.peer == m.peer, Booking.status == "confirmed"
+            )
+        )
+        if b and m.channel == "sms":
+            due = b.starts_at.replace(tzinfo=timezone.utc) - timedelta(hours=24)
+            if due > now():
+                key = "reminder:" + hashlib.sha256((b.id + b.starts_at.isoformat()).encode()).hexdigest()
+                existing = db.scalar(select(ActionJob).where(ActionJob.tenant_id == t.id, ActionJob.request_key == key))
+                if not existing:
+                    db.add(
+                        ActionJob(
+                            tenant_id=t.id,
+                            conversation_id=c.id,
+                            kind="reminder",
+                            status="queued",
+                            payload=encrypt({"booking_id": b.id, "starts_at": b.starts_at.isoformat()}),
+                            request_key=key,
+                            due_at=due,
+                            confirmation_message_id=m.id,
+                        )
+                    )
+                    db.add(Audit(tenant_id=t.id, actor="customer", action="reminder.consent", detail=b.id))
+                queue_reply(db, t, m, "One SMS reminder is authorised for 24 hours before your appointment. Reply STOP to opt out.")
+                return
+        queue_reply(db, t, m, "A reminder cannot be scheduled. Use SMS with a confirmed appointment more than 24 hours away.")
         return
     if m.body.strip().startswith("CONFIRM ") and can_automate(db, t, m, p):
         identity = m.body.strip()[8:]
@@ -248,6 +279,26 @@ def add_department(data: DepartmentInput, user=Depends(current_user)):
         return {"id": d.id}
 
 
+@router.put("/api/departments/{department_id}", dependencies=[Depends(csrf)])
+def update_department(department_id: str, data: DepartmentInput, user=Depends(current_user)):
+    owner(user)
+    try:
+        ZoneInfo(data.timezone)
+    except Exception:
+        raise HTTPException(422, "Unknown timezone")
+    if data.opens >= data.closes:
+        raise HTTPException(422, "Closing must follow opening")
+    with DB.begin() as db:
+        db.scalar(select(Tenant).where(Tenant.id == user.tenant_id).with_for_update())
+        d = db.scalar(select(Department).where(Department.id == department_id, Department.tenant_id == user.tenant_id).with_for_update())
+        if not d:
+            raise HTTPException(404, "Department not found")
+        for key, value in data.model_dump().items():
+            setattr(d, key, value)
+        db.add(Audit(tenant_id=user.tenant_id, actor=user.id, action="department.updated", detail=d.id))
+    return {"saved": True}
+
+
 @router.get("/api/departments")
 def departments(user=Depends(current_user)):
     with DB() as db:
@@ -343,7 +394,9 @@ def perform_booking(db, t, c, payload, key):
 
 def action_one():
     with DB.begin() as db:
-        candidate = db.scalar(select(ActionJob).where(ActionJob.status == "queued").order_by(ActionJob.created_at).limit(1))
+        candidate = db.scalar(
+            select(ActionJob).where(ActionJob.status == "queued", ActionJob.kind != "reminder").order_by(ActionJob.created_at).limit(1)
+        )
         if not candidate:
             return False
         t = db.scalar(select(Tenant).where(Tenant.id == candidate.tenant_id).with_for_update())
@@ -420,7 +473,7 @@ def action_one():
                 # Completion is a distinct idempotent notification, not a repeated action.
                 m_copy = SimpleNamespace(id=j.id, tenant_id=m.tenant_id, number_id=m.number_id, channel=m.channel, peer=m.peer, body=m.body)
                 text = (
-                    "Appointment confirmed for " + receipt["starts_at"]
+                    "Appointment confirmed for " + receipt["starts_at"] + ". For one SMS reminder, reply REMIND " + receipt["booking_id"]
                     if j.kind in {"book", "reschedule"}
                     else "Appointment cancelled."
                     if j.kind == "cancel"
@@ -435,6 +488,59 @@ def action_one():
             db.add(Audit(tenant_id=t.id, actor="ai", action="action.completed", detail=j.id))
         except Exception:
             j.status, j.receipt = "review", "Action outcome needs reconciliation; no success confirmation or automatic retry."
+    return True
+
+
+def reminder_one():
+    """Queue one consented reminder atomically; provider delivery uses the existing outbox."""
+    with DB.begin() as db:
+        candidate = db.scalar(
+            select(ActionJob)
+            .where(ActionJob.kind == "reminder", ActionJob.status == "queued", ActionJob.due_at <= now())
+            .order_by(ActionJob.due_at)
+            .limit(1)
+        )
+        if not candidate:
+            return False
+        t = db.scalar(select(Tenant).where(Tenant.id == candidate.tenant_id).with_for_update())
+        j = db.scalar(select(ActionJob).where(ActionJob.id == candidate.id, ActionJob.status == "queued").with_for_update(skip_locked=True))
+        if not j:
+            return False
+        c = db.get(Conversation, j.conversation_id)
+        payload = decrypt(j.payload)
+        b = db.get(Booking, payload["booking_id"])
+        # Never send stale reminders after cancellation/rescheduling, or late after the appointment.
+        if (
+            not b
+            or b.tenant_id != t.id
+            or b.status != "confirmed"
+            or b.peer != c.peer
+            or b.starts_at.isoformat() != payload["starts_at"]
+            or b.starts_at.replace(tzinfo=timezone.utc) <= now()
+        ):
+            j.status = "cancelled"
+            return True
+        # Respect UK quiet hours; a due reminder waits until daytime while still relevant.
+        local = now().astimezone(ZoneInfo("Europe/London"))
+        if not 9 <= local.hour < 20:
+            tomorrow = local + timedelta(days=1 if local.hour >= 20 else 0)
+            j.due_at = tomorrow.replace(hour=9, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+            return True
+        m = SimpleNamespace(id=j.id, tenant_id=t.id, number_id=c.number_id, channel=c.channel, peer=c.peer, body="reminder")
+        try:
+            queued = queue_reply(
+                db,
+                t,
+                m,
+                "Appointment reminder: "
+                + b.starts_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("Europe/London")).strftime("%d %b %Y at %H:%M")
+                + " UK time. Reply STOP to opt out.",
+            )
+            db.flush()
+            j.status, j.receipt = "completed", json.dumps({"message_id": queued.id, "delivery": "queued"})
+        except RuntimeError:
+            j.status, j.receipt = "cancelled", "Reminder blocked by current authority or messaging limits."
+        db.add(Audit(tenant_id=t.id, actor="worker", action="reminder." + j.status, detail=j.id))
     return True
 
 
@@ -453,7 +559,7 @@ def operations(user=Depends(current_user)):
             "confirmed_bookings": count(Booking, Booking.status == "confirmed"),
             "leads": count(Lead),
             "pending_actions": count(ActionJob, ActionJob.status.in_(["queued", "awaiting_confirmation"])),
-            "action_failures": count(ActionJob, ActionJob.status == "failed"),
+            "action_failures": count(ActionJob, ActionJob.status.in_(["failed", "review"])),
         }
 
 

@@ -15,7 +15,7 @@ from decimal import Decimal
 from sqlalchemy import or_, select
 from .config import settings
 from .ai import draft_one
-from .autonomy import action_one, conversation
+from .autonomy import action_one, conversation, reminder_one
 from .models import AIProfile, Audit, DB, EmailJob, Message, Number, Order, Suppression, Tenant, WorkerHeartbeat, now
 from .security import decrypt
 from .billing import periodic_reconcile
@@ -209,7 +209,8 @@ def run():
             heartbeat()
             if settings.stripe_key:
                 periodic_reconcile()
-            worked = action_one()
+            worked = reminder_one()
+            worked = action_one() or worked
             worked = draft_one() or worked
             worked = email_one() or worked
             worked = provision_one() or worked

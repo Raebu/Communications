@@ -296,6 +296,7 @@ class ActionJob(Base):
     request_key: Mapped[str] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(30), default="awaiting_confirmation")
     receipt: Mapped[str] = mapped_column(Text, default="")
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 

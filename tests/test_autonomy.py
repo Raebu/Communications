@@ -203,3 +203,88 @@ def test_upgrade_preserves_existing_ai_and_number_defaults():
     with engine.connect() as db:
         assert db.execute(text("SELECT autonomous,paused,language FROM ai_profiles")).one() == (0, 0, "en-GB")
         assert db.execute(text("SELECT whatsapp_sender,rcs_sender,rcs_service_sid FROM numbers")).one() == ("", "", "")
+
+
+def test_reminder_consent_dedup_and_opt_out(setup_ai, monkeypatch):
+    from datetime import datetime, timezone
+    from app import autonomy
+    from app.models import Suppression
+
+    c, t, n = setup_ai
+    enable_auto(t)
+    fixed = datetime(2030, 1, 7, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(autonomy, "now", lambda: fixed)
+    with DB.begin() as db:
+        d = Department(tenant_id=t, name="Consulting", bookings_enabled=True)
+        db.add(d)
+        db.flush()
+        b = Booking(
+            tenant_id=t,
+            department_id=d.id,
+            peer="+447700900123",
+            starts_at=fixed + timedelta(days=2),
+            ends_at=fixed + timedelta(days=2, minutes=30),
+            request_key="reminder-test",
+        )
+        db.add(b)
+        db.flush()
+        bid = b.id
+    assert inbound(c, t, "REMIND " + bid, "SMremind1").status_code == 200
+    assert inbound(c, t, "REMIND " + bid, "SMremind2").status_code == 200
+    with DB.begin() as db:
+        jobs = db.scalars(select(ActionJob).where(ActionJob.kind == "reminder")).all()
+        assert len(jobs) == 1
+        jobs[0].due_at = fixed
+        db.add(Suppression(tenant_id=t, peer="+447700900123"))
+    assert autonomy.reminder_one()
+    with DB() as db:
+        assert db.scalar(select(ActionJob)).status == "cancelled"
+        assert not db.scalar(select(Message).where(Message.request_key.like("ai:%"), Message.body.like("Appointment reminder:%")))
+
+
+def test_reminder_queues_once_and_cancelled_booking_is_silent(setup_ai, monkeypatch):
+    from datetime import datetime, timezone
+    from app import autonomy
+    from app.security import encrypt
+
+    c, t, n = setup_ai
+    enable_auto(t)
+    fixed = datetime(2030, 1, 7, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(autonomy, "now", lambda: fixed)
+    inbound(c, t, "Hello", "SMthread")
+    with DB.begin() as db:
+        convo = db.scalar(select(Conversation))
+        d = Department(tenant_id=t, name="Consulting", bookings_enabled=True)
+        db.add(d)
+        db.flush()
+        for suffix, status in [("active", "confirmed"), ("cancelled", "cancelled")]:
+            b = Booking(
+                tenant_id=t,
+                department_id=d.id,
+                peer=convo.peer,
+                starts_at=fixed + timedelta(days=1),
+                ends_at=fixed + timedelta(days=1, minutes=30),
+                status=status,
+                request_key=suffix,
+            )
+            db.add(b)
+            db.flush()
+            # Reload matches SQL timestamp representation on both supported databases.
+            db.refresh(b)
+            db.add(
+                ActionJob(
+                    tenant_id=t,
+                    conversation_id=convo.id,
+                    kind="reminder",
+                    status="queued",
+                    due_at=fixed,
+                    payload=encrypt({"booking_id": b.id, "starts_at": b.starts_at.isoformat()}),
+                    request_key=suffix,
+                )
+            )
+    assert autonomy.reminder_one()
+    assert autonomy.reminder_one()
+    assert not autonomy.reminder_one()
+    with DB() as db:
+        assert len(db.scalars(select(Message).where(Message.body.like("Appointment reminder:%"))).all()) == 1
+        assert sorted(db.scalars(select(ActionJob.status)).all()) == ["cancelled", "completed"]

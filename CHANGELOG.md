@@ -1,3 +1,9 @@
+## Unreleased
+
+- Durable, explicitly consented SMS appointment reminders with UK quiet hours, duplicate protection and stale-booking cancellation.
+- Owner-only department updates and corrected operations review counts.
+- Migration 0007 and reminder consent/delivery suppression tests.
+
 # 0.4.0 — 2026-10-02
 
 Autonomous message decision engine, durable customer-confirmed actions, department booking calendars, knowledge approval/expiry/versioning, staff takeover, global pause, operational dashboard, requested SMTP emails and leads. Added encrypted tenant Google Calendar integration with live free/busy checks and stable event IDs for booking/cancellation/rescheduling. Added signed ConversationRelay WebSocket streaming, interrupt cancellation and fallback; approved WhatsApp/RCS sender bindings with WhatsApp window checks; regression evaluation API and tenant export. Live configuration and several expanded scope items remain outstanding, as recorded in docs/AUTONOMY.md.
