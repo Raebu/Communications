@@ -2,11 +2,15 @@
 
 The 0.5 application release is published to `Raebu/Communications`. Hosted CI has verified the PostgreSQL test suite, container build, Caddy configuration, script/JavaScript validation and CodeQL analysis. This is evidence about code delivery, not a live service certificate.
 
+## Approved hosting direction
+
+The launch domain is `connect.theraeburngroup.com`. Use the existing Docker Compose deployment on a dedicated DigitalOcean London host for the portal, API, Twilio callbacks, voice WebSocket endpoint and continuous worker. The connected Vercel account has been inspected; no Communications project was identified. Vercel may host a separate marketing site later. No host, DNS record or Vercel deployment has been created by this handoff. See [HOSTING.md](HOSTING.md) and the credential-free [production environment template](../deployment/production.env.example).
+
 ## Current blockers
 
 | Dependency | Current evidence | Required activation |
 |---|---|---|
-| Dedicated Communications host | The selected DigitalOcean account lists only the two recruitment staging droplets | A separately provisioned host, authorised deployment access and service hostname/DNS |
+| Dedicated Communications host | The selected DigitalOcean account lists only the two recruitment staging droplets | A separately provisioned host and authorised deployment access; connect.theraeburngroup.com is approved, DNS still needs configuration |
 | Twilio | No authenticated provider connector or application credentials are configured here; previous browser verification was blocked by CAPTCHA | Complete verification in your own browser, then securely configure the Main API key/subaccounts and approved sender bindings on the service |
 | Platform Stripe | Existing connected tooling exposes a development account; a live browser login does not configure the application's runtime | Authorised live restricted key, webhook and agreed subscription price IDs on the server |
 | AI runtime | The repository contains the provider adapter and controls, not a deployed model | Actual approved endpoint/model/key and load/quality acceptance |
