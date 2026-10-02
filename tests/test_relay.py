@@ -50,3 +50,71 @@ def test_signed_stream_and_human_exit(setup_ai, monkeypatch):
     with DB() as db:
         session = db.get(VoiceSession, "CArelay")
         assert session.status == "handoff" and "Hello" not in session.history
+
+
+def test_voice_action_preview_confirmation_and_replay(setup_ai, monkeypatch):
+    import json
+    from sqlalchemy import select
+    from app import ai
+    from app.models import AIProfile, ActionJob, Lead
+
+    c, t, token, sid = start(setup_ai, monkeypatch)
+    with DB.begin() as db:
+        db.get(AIProfile, t).autonomous = True
+    monkeypatch.setattr(
+        ai,
+        "generate",
+        lambda *args: json.dumps(
+            {"reply": "I can pass this on.", "intent": "lead", "args": {"summary": "Caller requests bookkeeping help"}}
+        ),
+    )
+    path = "/ws/voice?tenant=" + t
+    signature = RequestValidator("testtoken").compute_signature(settings.public_url + path, {})
+    with c.websocket_connect(path, headers={"x-twilio-signature": signature}) as ws:
+        ws.send_json({"type": "setup", "accountSid": sid, "callSid": "CArelay", "customParameters": {"sessionToken": token}})
+        ws.send_json({"type": "prompt", "voicePrompt": "Please pass on my enquiry", "last": True})
+        assert "confirm this action" in ws.receive_json()["token"]
+        assert ws.receive_json()["last"]
+        with DB() as db:
+            assert not db.scalar(select(Lead))
+        ws.send_json({"type": "prompt", "voicePrompt": "Confirm this action", "last": True})
+        assert "recorded" in ws.receive_json()["token"]
+        assert ws.receive_json()["last"]
+        ws.send_json({"type": "prompt", "voicePrompt": "Confirm this action", "last": True})
+        assert "no current action" in ws.receive_json()["token"]
+        assert ws.receive_json()["last"]
+        ws.send_json({"type": "dtmf", "digit": "0"})
+        assert ws.receive_json()["type"] == "end"
+    with DB() as db:
+        assert len(db.scalars(select(Lead)).all()) == 1
+        assert db.scalar(select(ActionJob)).status == "completed"
+
+
+def test_interruption_revokes_voice_proposal(setup_ai, monkeypatch):
+    import json
+    from sqlalchemy import select
+    from app import ai
+    from app.models import AIProfile, ActionJob, Lead
+
+    c, t, token, sid = start(setup_ai, monkeypatch)
+    with DB.begin() as db:
+        db.get(AIProfile, t).autonomous = True
+    monkeypatch.setattr(
+        ai, "generate", lambda *args: json.dumps({"reply": "I can pass this on.", "intent": "lead", "args": {"summary": "Caller enquiry"}})
+    )
+    path = "/ws/voice?tenant=" + t
+    signature = RequestValidator("testtoken").compute_signature(settings.public_url + path, {})
+    with c.websocket_connect(path, headers={"x-twilio-signature": signature}) as ws:
+        ws.send_json({"type": "setup", "accountSid": sid, "callSid": "CArelay", "customParameters": {"sessionToken": token}})
+        ws.send_json({"type": "prompt", "voicePrompt": "Pass this on", "last": True})
+        assert "confirm this action" in ws.receive_json()["token"]
+        assert ws.receive_json()["last"]
+        ws.send_json({"type": "interrupt", "utteranceUntilInterrupt": "Pass this enquiry"})
+        ws.send_json({"type": "prompt", "voicePrompt": "Confirm this action", "last": True})
+        assert "no current action" in ws.receive_json()["token"]
+        assert ws.receive_json()["last"]
+        ws.send_json({"type": "dtmf", "digit": "0"})
+        ws.receive_json()
+    with DB() as db:
+        assert not db.scalar(select(Lead))
+        assert db.scalar(select(ActionJob)).status == "cancelled"

@@ -120,6 +120,7 @@ def send_one():
             return False
         message.status = "sending"
         message_id = message.id
+    submitted = False
     try:
         with DB.begin() as db:
             m = db.scalar(select(Message).where(Message.id == message_id).with_for_update())
@@ -133,6 +134,7 @@ def send_one():
                 thread = conversation(db, m)
                 if (
                     not profile
+                    or not profile.enabled
                     or not profile.autonomous
                     or profile.paused
                     or thread.mode == "paused"
@@ -140,19 +142,28 @@ def send_one():
                 ):
                     m.status, m.error = "failed", "automation_paused"
                     return True
+            sealed = decrypt(m.sensitive_payload) if m.sensitive_payload else None
+            if sealed and sealed.get("expires_at", 0) <= now().timestamp():
+                m.status, m.error, m.sensitive_payload = "failed", "verification_expired", ""
+                return True
             client = tenant_client(t)
             if not within_budget(client, t):
                 m.status, m.error = "failed", "spend_limit"
                 return True
+            send_arguments = arguments(db, m, n)
+            submitted = True
             remote = client.messages.create(
-                **arguments(db, m, n), body=m.body, status_callback=settings.public_url + "/webhooks/twilio/status"
+                **send_arguments,
+                body=sealed["body"] if sealed else m.body,
+                status_callback=settings.public_url + "/webhooks/twilio/status",
             )
             m.sid, m.status = remote.sid, remote.status
+            m.sensitive_payload = ""
     except Exception:
         log.error("Outbound message %s requires reconciliation", message_id)
         with DB.begin() as db:
             m = db.get(Message, message_id)
-            m.status, m.error = "review", "provider_result_unknown"
+            m.status, m.error = ("review", "provider_result_unknown") if submitted else ("failed", "preflight_blocked")
     return True
 
 
@@ -207,11 +218,20 @@ def run():
     while True:
         try:
             heartbeat()
+            from .operations import retention_one
+
+            retention_one()
             if settings.stripe_key:
                 periodic_reconcile()
             worked = reminder_one()
             worked = action_one() or worked
             worked = draft_one() or worked
+            from .quality import scheduled_one
+
+            worked = scheduled_one() or worked
+            from .outbound_hooks import webhook_one
+
+            worked = webhook_one() or worked
             worked = email_one() or worked
             worked = provision_one() or worked
             worked = send_one() or worked

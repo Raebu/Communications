@@ -5,6 +5,7 @@ import json
 from datetime import timezone
 import httpx
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import select
 from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import VoiceResponse
@@ -74,6 +75,11 @@ async def stream_answer(profile, history):
                     yield text
 
 
+async def empty_stream():
+    if False:
+        yield ""
+
+
 @router.websocket("/ws/voice")
 async def relay_socket(ws: WebSocket):
     tenant_id = ws.query_params.get("tenant", "")
@@ -135,14 +141,22 @@ async def relay_socket(ws: WebSocket):
                     quota(db, tenant_id)
                     profile = knowledge_profile(db, p, speech)
                     session.turn += 1
+                    autonomous = p.autonomous
             except Exception:
                 await ws.send_json({"type": "end", "handoffData": "human"})
                 return
-            history.append({"role": "user", "content": speech})
+            history.append(
+                {"role": "user", "content": "[Verification response redacted]" if speech.lower().startswith("verify code ") else speech}
+            )
             answer = ""
             try:
                 async with asyncio.timeout(min(15, max(0, deadline - asyncio.get_running_loop().time()))):
-                    async for text in stream_answer(profile, history):
+                    if autonomous:
+                        from .voice_actions import decision
+
+                        answer = await run_in_threadpool(decision, sid, speech, history)
+                        await ws.send_json({"type": "text", "token": answer, "last": False, "interruptible": True, "preemptible": True})
+                    async for text in stream_answer(profile, history) if not autonomous else empty_stream():
                         answer += text
                         await ws.send_json({"type": "text", "token": text, "last": False, "interruptible": True, "preemptible": True})
                 if not answer:
@@ -170,6 +184,9 @@ async def relay_socket(ws: WebSocket):
                 if task and not task.done():
                     task.cancel()
                     await asyncio.gather(task, return_exceptions=True)
+                from .voice_actions import invalidate_proposal
+
+                await run_in_threadpool(invalidate_proposal, sid)
                 heard = event.get("utteranceUntilInterrupt", "")[:500]
                 if history and history[-1]["role"] == "assistant":
                     history[-1]["content"] = heard
@@ -198,6 +215,9 @@ async def relay_socket(ws: WebSocket):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         if sid:
+            from .voice_actions import invalidate_proposal
+
+            await run_in_threadpool(invalidate_proposal, sid)
             with DB.begin() as db:
                 session = db.get(VoiceSession, sid)
                 if session and session.tenant_id == tenant_id:

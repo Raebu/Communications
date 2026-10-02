@@ -1,74 +1,79 @@
-# Autonomous service delivery status — 0.4
+# Autonomous communications service — 0.5
 
-This is a tested code increment, not a completed public launch. Earlier 0.3 documentation describes the initial draft-only implementation. The additions below supersede that limitation when an owner enables autonomous messaging.
+This release implements the application workflows below. It is not a completed public launch: production hosting, provider credentials, sender approvals, legal terms, commercial prices and real-call acceptance remain activation dependencies. Extensions still outstanding are recorded explicitly.
 
-## How autonomy works
+## Architecture and authority
 
-Signed inbound webhooks map the sender to a tenant and channel. Duplicate provider message identities are ignored. An active, approved tenant with enabled autonomy creates one durable generation job. The model proposes a schema-constrained intent. Server code validates the selected operation, recipient, calendar and slot. It never executes arbitrary model tools, SQL, URLs or code.
+Signed Twilio webhooks select a tenant and approved channel. The database deduplicates provider events, stores bounded conversation context, and queues model work. Approved knowledge and verified preferences inform a schema-constrained intent. Server code validates every proposed operation, product, appointment and recipient. The model cannot execute arbitrary tools, SQL, URLs or code.
 
-Answers queue through existing consent, local allowance, approved sender, billing and provider spend controls. A human takeover or pause stops queued AI messages before provider submission. Requests already submitted to a provider cannot be recalled. Explicit HUMAN/AGENT messages switch ownership to staff. Model uncertainty/invalid structured output sends a short handoff acknowledgement and stops subsequent automation for the thread.
+A messaging customer confirms an exact preview with `CONFIRM <action UUID>` within fifteen minutes. Streaming voice previews the same operation and requires the exact phrase “confirm this action” within two minutes. Interruptions revoke unconfirmed voice proposals. Owner pause, human takeover, approval, billing, opt-out and usage limits are rechecked. Provider-submitted requests cannot be recalled. Unknown action outcomes enter review instead of automatic retry. Human reconciliation records evidence without silently repeating the operation or telling a customer it succeeded.
 
-Bookings, cancellation, rescheduling, requested emails and lead capture produce a durable action proposal. The customer sees the operation and must reply `CONFIRM <action UUID>` within fifteen minutes. Confirmation is scoped to the same tenant and conversation. The action worker rechecks autonomy, approval, billing and ownership. Receipts only report success after the local operation commits. SMTP receipts report **queued**, never falsely claim delivered.
+Caller ID grants no private access. Voice conversations use a separate call-specific identity until the caller proves possession of a messaging channel. New voice bookings require that verification. A signed voice setup token binds the conversation to one tenant and call, not to an asserted telephone number.
 
-Department calendars are native to this application. Tenant locking and department locking prevent two application bookings claiming the same slot. Times persist in UTC and display in the department timezone. Slots enforce business hours, weekdays, duration, fourteen-day horizon and one-hour notice. A department can additionally connect to Google Calendar through the tenant integration adapter. Free/busy checks exclude external bookings; Google events use stable request IDs for reconciliation. Microsoft Calendar, holidays and staff leave rules remain outstanding.
+## Delivery scope
 
-## Expanded scope: honest status
-
-| Requirement | Implemented | Remaining |
+| Requirement | Implemented | Activation or further extension |
 |---|---|---|
-| Natural voice | Signed ConversationRelay transport, model token streaming, interruption cancellation, zero transfer, bounded call/session, encrypted history | Live Twilio onboarding, voice latency/load and interruption acceptance; business actions over voice |
-| Autonomous channels | SMS and approved WhatsApp/RCS routing, automatic replies, isolated threads, opt-out, WhatsApp 24-hour window | Actual sender approvals/bindings, templates/rich media, channel-specific pricing |
-| Appointment management | Internal and authorised Google department calendars, booking, customer-confirmed cancellation/rescheduling, conflict prevention, receipts, explicit-consent SMS reminders | Self-service Google OAuth, Microsoft Calendar, holidays/leave |
-| Knowledge | Approved owner-entered sources, expiry checks, relevance ranking, source IDs/versions | Safe website/PDF ingestion, refresh jobs, immutable version history, stronger retrieval/citations |
-| Customer memory | Bounded same-thread context and encrypted voice session history | Verified cross-channel identity, preference memory, privacy retention/deletion flows |
-| Business actions | Internal leads/CRM inbox, requested platform-SMTP outbox, durable receipts | External CRM connectors, tenant-owned email OAuth/domains, support-ticket integrations |
-| Authority | Closed intent schema, approved slots, exact-operation confirmation, ownership and account checks | Configurable per-action policies, refunds/discounts, verified hosted payment workflows |
-| Reliability | Durable DB jobs, idempotency, pause, conservative ambiguous-send handling, model-failure handoff | Provider failover, integration reconciliation UI, outage recovery/load tests |
-| Dashboard | Conversations, handoff ownership, bookings, leads, actions, failure counts | Actual cost/margin analytics, conversion attribution, billing meters |
-| Quality testing | Regression evaluation API, automated contract/security/replay/channel/booking tests | Real-model and real-call evaluations, rollout controls, continuous production quality pipeline |
-| Self-service onboarding | Business/profile and knowledge/calendar setup forms | OAuth connection wizard, end-to-end activation test and launch checks |
-| Departments | Separate named booking schedules and descriptions | Department-specific model instructions, routing and forwarding destinations |
-| Follow-up | No unsolicited or scheduled autonomous follow-up enabled | Consent ledger, reminders, quiet hours and frequency caps |
-| Multilingual | Configurable speech language and model-language instruction | Certified supported language pairs and business knowledge translation |
-| Payments | Existing Stripe hosted service subscription checkout | Customer payment-link action, payment receipts, refund authority |
-| Commercial controls | Daily AI request limit, shared conservative messaging cap, call reservations/provider budget | Usage billing, monetary model ceilings, margin alerts |
-| Security/privacy | Tenant scoping, encrypted voice/action payloads, owner controls, export API, existing MFA | Automated retention, authenticated customer privacy requests, complete data deletion/export |
-| Abuse protection | Signed ingress, limits, closed tools, UK-only outgoing messaging, no blind ambiguous retries | Robust model abuse evaluations, content filtering, anomaly alerting |
-| Human takeover | Thread AI/human/paused ownership, staff replies take ownership, explicit return to AI | Agent presence, assignment queues, CRM context handoff |
-| APIs/webhooks | Authenticated application API and signed provider ingress | Customer API keys, signed outbound event subscriptions, connector health monitoring |
+| Natural voice | Signed ConversationRelay, FAQ model token streaming, interruptible speech, call budgets, zero transfer, call-scoped action previews and receipts | Twilio onboarding and real latency/interruption/load acceptance; autonomous structured decisions wait for the bounded decision before speaking |
+| Automatic channel replies | SMS, approved WhatsApp/RCS routing, isolated threads, opt-out, WhatsApp 24-hour enforcement | Bind actual approved senders; approved WhatsApp templates and rich media remain extensions |
+| Appointments | Native/Google availability, booking, cancellation, rescheduling, explicit confirmation, verified cross-channel ownership, one consented SMS reminder | Authorised Google credentials; self-service OAuth, Microsoft Calendar, holidays and leave remain extensions |
+| Maintained knowledge | Owner sources, draft-only UTF-8 text/HTML snapshot imports, approval, expiry, relevance ranking, immutable revisions | Review source content; PDF parsing, automatic website crawling/refresh and semantic search remain extensions |
+| Customer memory | Single-use channel proof, encrypted shared preference, verified appointment access, UNLINK and FORGET MEMORY | No biometric or caller-ID verification; organisation-specific sensitive-data workflows need stronger proof |
+| Business actions | Internal lead inbox, exact-content requested SMTP email, signed durable integration events and scoped CRM polling API | Connect authorised CRM receiver/SMTP; dedicated external CRM adapters and tenant email OAuth remain extensions |
+| Authority limits | Closed intents, owner catalogue and department controls, operation-specific confirmation, pause/takeover, daily request/message/call caps | Configure actual business policy and published allowances |
+| Recovery | Durable actions, outboxes, booking IDs, Checkout idempotency, recorded review outcomes, no blind resend after unknown delivery | Provider reconciliation for interrupted actions; model/provider failover remains an extension |
+| Operations and commercial analytics | Bookings/leads/actions, payment ledger, delivery status, existing usage counters, idempotent invoice-backed revenue/cost ledger and recorded margin | Import actual costs; the ledger is not certified total profit; conversion attribution and automatic metered invoicing remain extensions |
+| Continuous quality | Owner cases, expected/forbidden terms, latency, opt-in daily runs, quota reservation, automatic pause after two failed runs | Choose representative cases; lexical tests do not certify factual accuracy or safety |
+| Payments | Tenant-owned merchant integration, approved fixed GBP catalogue, customer-requested hosted Checkout, signed/retrieved paid-state receipts | Authorised merchant restricted key and webhook, approved tax-inclusive price IDs; voice payment links remain messaging-only |
+| Security and privacy | Tenant isolation, encrypted provider/voice/action/identity secrets, MFA, CSRF, scoped expiring API keys, content retention, expanded owner export | Publish retention/terms; formal customer privacy-case handling and comprehensive account deletion remain extensions |
+| Customer API and hooks | Read scopes, hashed 90-day keys, revocation, cursor event feed, signed action events, public-IP-pinned TLS webhook delivery | Connect receiver; verify signature freshness and durable event deduplication |
+| Onboarding and launch | Account recovery, verification, tenant approval, number registration, subscription reconciliation, preflight and health checks | Dedicated Communications host/domain, live providers, final legal/commercial identity and live acceptance |
 
-The table is intentionally explicit: code for one item does not mean every expanded capability or commercial launch requirement is complete.
+## Appointment and reminder behaviour
 
-## Activation
+Native calendars coordinate this application's bookings. Slots enforce timezone, hours, weekdays, duration, a fourteen-day horizon and one-hour notice. Tenant and department locks protect local reservations. Google free/busy checks exclude external events; stable event IDs reconcile creation. Free/busy plus event insert is not an atomic provider reservation: other calendar clients can still race.
 
-1. Migrate through 0006, restart API and worker. Configure the existing model endpoint and secrets. No model is installed or deployed by these changes.
-2. In **AI receptionist**, enter accurate business facts; enable SMS drafts and **Send AI replies automatically**. The global pause switch stops new automated replies/actions. Use inbox controls to transfer a thread to human ownership or resume AI.
-3. Add approved knowledge documents and department calendars. For Google Calendar, run `python -m app.manage connect-google-calendar <department-id> <calendar-id>` in the secure deployment terminal. It prompts privately for OAuth client ID/secret and an already-authorised refresh token, verifies availability access, and stores the configuration encrypted for that tenant. Use scopes sufficient for event writes and free/busy reads. The consent grant is not manufactured by this command; self-service OAuth onboarding is still required.
-4. Configure SMTP with the platform's verified sender. Requested email content/recipient is previewed for customer confirmation. Outbox ambiguity remains operator-reviewable; no blind resend after an unknown SMTP result.
-5. For streaming voice, complete Twilio ConversationRelay onboarding, expose the existing app over HTTPS/WSS, verify signed setup/prompt/interrupt/end events, then set `VOICE_STREAMING_ENABLED=true`. Streaming currently answers business questions; action execution remains messaging-only.
-6. For WhatsApp/RCS, an operator must first verify approval and sender ownership in that tenant's Twilio subaccount, then run `python -m app.manage bind-sender <number-id> whatsapp whatsapp:+44... --approval-reference <provider-reference>` or `... rcs rcs:<agent> --service-sid MG... --approval-reference <provider-reference>`. Configure signed inbound/status callbacks in the provider service. This command records the approval reference; it does not register or approve the sender. No cross-tenant shared sender pool is allowed.
-7. Test a real customer message/call and action completion before public marketing. AI-plan public checkout remains gated; do not invent prices or change live subscriptions before costs/terms are agreed.
+`REMIND <booking UUID>` on the booking's SMS channel authorises one reminder 24 hours before the appointment, only for appointments more than 24 hours away. Repeated consent does not repeat delivery. UK quiet hours are 20:00–09:00. Cancellation, rescheduling, stale appointments, opt-out, pause, takeover, billing and message limits block reminders. A rescheduled appointment requires fresh consent. No marketing permission is inferred. Queue receipts do not claim provider delivery.
+
+## Verified memory
+
+Send `LINK` from an original messaging channel. The code is encrypted in the outbox and redacted in stored message text. On another channel send `LINK <eight digits>`, or on a streaming call say “verify code” followed by the digits. Challenges expire after ten minutes, are single use and have tenant-level issuance/redemption attempt limits. Linking proves possession of a channel, not a legal identity. Existing separately verified identities require human review rather than automatic merging.
+
+`REMEMBER <preference>` saves at most 150 characters for linked channels. Preferences are untrusted data, never permission to act. `FORGET MEMORY` clears the shared preference; `UNLINK` removes the current channel's association. Neither command deletes financial records or all message history. Verification responses are redacted before model context is constructed.
+
+## Secure activation
+
+1. Apply migrations through **0013**, restart the API/worker, and run `python -m app.manage check-config`. Model endpoint/key, encryption key and platform providers belong in the protected server configuration, never repository files or chat.
+2. Configure the actual model and approved business facts. Enable the profile only for an approved, currently paid tenant. Autonomous and streaming voice are independent owner/operator controls.
+3. Connect an authorised Google department calendar with `python -m app.manage connect-google-calendar <department-id> <calendar-id>`. Private prompts request OAuth client credentials and an already authorised refresh token. The command verifies free/busy, encrypts credentials and binds one tenant. It does not manufacture a consent grant.
+4. Complete Twilio ConversationRelay onboarding, expose HTTPS/WSS, test signed setup/prompt/interrupt/end events and set `VOICE_STREAMING_ENABLED=true`. Calls disclose AI and offer zero transfer. Without a forwarding destination, the safe fallback ends the call.
+5. After checking approval and subaccount ownership, bind channels using `python -m app.manage bind-sender <number-id> whatsapp whatsapp:+44... --approval-reference <reference>` or `... rcs rcs:<agent> --service-sid MG... --approval-reference <reference>`. These commands record bindings; they do not register or approve senders.
+6. Use `python -m app.manage connect-stripe-merchant <tenant-id> <account-id>` for an authorised tenant merchant account. Private prompts accept its restricted API key and webhook signing secret. Configure the returned merchant endpoint for Checkout completion, asynchronous success/failure and expiry. Owner catalogue approval verifies a fixed GBP price and requires confirmation that published amounts include applicable taxes and charges. The AI never chooses arbitrary prices, discounts, subscriptions or card charges. The platform's subscription billing remains separate from tenant customer payments.
+7. Connect a business receiver with `python -m app.manage connect-webhook <tenant-id> <https-url> <public-ip>`. TLS verifies the URL hostname while TCP connects only to the pinned public IP, preventing DNS rebinding/private-network access. IP rotation requires operator reconfiguration. A secret of at least 32 characters is prompted privately. Only set `--receiver-idempotent` after confirming receiver-side durable event deduplication.
+8. Configure SMTP and the platform's verified sender. Customer confirmation previews exact recipient, subject and body. Queueing is not delivery; uncertain SMTP results remain reviewable.
+9. Publish the selected retention policy before onboarding. Defaults scrub message/draft/lead content and completed action payloads after 90 days and voice history after 30 days. Accounting, consent, suppression and reconciliation metadata remain. Backup copies require their own expiry/deletion policy.
+10. Run real SMS, WhatsApp/RCS where approved, voice interruption/transfer, verified booking/rescheduling, opt-out/reminder and merchant test-payment acceptance. AI-plan public checkout remains gated pending approved pricing and acceptance. Do not claim public launch based on code tests alone.
+
+## Signed integration events
+
+The receiver verifies `X-Raeburn-Signature = sha256=<hex HMAC-SHA256>` using its configured secret over the exact bytes `timestamp + "." + event_id + "." + request_body`. Check the timestamp is recent and store `X-Raeburn-Event-ID` durably before processing a repeat. The application does not follow redirects or store response bodies. A 2xx response means acknowledged, not that the CRM business action succeeded. Known 429/503 responses have at most three bounded attempts only when receiver idempotency is explicitly configured. Unknown delivery goes to review; a process crash after submission stays in sending for reconciliation.
+
+The read API uses `Authorization: Bearer <issued key>`. Endpoints are `/api/customer/v1/leads`, `/bookings` and `/events`. Events return a `next_cursor`; supply it as `after` on the next request. Scope and tenant checks apply independently of browser sessions. No credential is returned again after creation.
 
 ## Operational limitations
 
-- Native calendars coordinate this application's bookings only. Connected Google calendars additionally exclude verified free/busy intervals. Google free/busy plus insert is not an atomic provider reservation: other calendar clients can still race. If an external operation has an unknown result, its action is left in review rather than blindly retried.
-- A phone number is not proof of identity. No private account history is exposed through cross-channel model memory.
-- Approved-source prompting is not a formal hallucination prevention guarantee. The model can still answer incorrectly; evaluate the chosen model.
-- Streaming starts speaking before the full reply is available; model safety must be evaluated before enabling it publicly. Output is bounded but is not comprehensively content-filtered.
-- Generating jobs interrupted by a crash remain conservative/stuck rather than silently making another billable generation request. Inspect provider usage before manual reconciliation.
-- All channels currently consume the existing conservative messaging allowance; financial per-channel pricing is not inferred from SMS segment counts.
-- The export API is owner-only and currently excludes decrypted voice transcripts/action payloads; it is an operational export, not yet a complete privacy-request system.
-- SMTP recipients are customer-confirmed but not verified email identities. Do not enable sensitive-record email workflows until verification exists.
+- Streaming FAQ output begins before the full answer is available; evaluate the chosen model before live enablement. Structured autonomous decisions are validated before speech.
+- Daily evaluation is a regression aid, not a factual or safety certification. It never edits business facts or grants new action authority.
+- Model generations interrupted by a crash remain conservative/stuck instead of silently making another paid request. Daily checks interrupted while running also require operator reconciliation.
+- All messaging channels consume the existing conservative shared allowance. Actual per-channel pricing and provider costs are not inferred from SMS segment counts.
+- The owner export now includes decrypted voice/action/preference data and knowledge revisions, but is bounded and is not a complete statutory privacy-case workflow.
+- Merchant payment receipts reconcile original payment, not later disputes/refunds or product fulfilment. Review those in the merchant account; automated refund/dispute handling remains an extension.
+- Platform SMTP recipients are confirmed but are not verified email identities. Keep sensitive-record email workflows disabled until stronger identity verification exists.
 
-## Primary implementation references
+## Primary references
 
-- Twilio ConversationRelay WebSocket protocol: https://www.twilio.com/docs/voice/conversationrelay/websocket-messages
-- Twilio ConversationRelay noun: https://www.twilio.com/docs/voice/twiml/connect/conversationrelay
-- Twilio WhatsApp service window: https://www.twilio.com/docs/whatsapp/api
-- Twilio RCS messaging: https://www.twilio.com/docs/rcs/send-an-rcs-message
-
-## Consented appointment reminders
-
-The booking receipt offers `REMIND <booking UUID>`. Only a signed inbound SMS from the booking's customer thread can authorise a single reminder, and the appointment must be more than 24 hours away. Repeated consent commands do not create repeated reminders. The durable worker schedules it 24 hours before the appointment, defers during UK quiet hours (20:00–09:00), and cancels stale reminders after cancellation/rescheduling or after the appointment. A rescheduled appointment requires fresh consent. Current billing, opt-out, pause, takeover and message limits are rechecked before enqueue and provider submission. Receipt means queued, not delivered. No marketing follow-up is inferred from booking consent.
-
-Migration `0007` adds the indexed due time. Department settings can now be updated through the owner-only API; changes do not silently move existing appointments. The operations failure count includes actions requiring outcome review.
+- Twilio ConversationRelay: https://www.twilio.com/docs/voice/conversationrelay/websocket-messages
+- Twilio WhatsApp window: https://www.twilio.com/docs/whatsapp/api
+- Twilio RCS routing: https://www.twilio.com/docs/rcs/send-an-rcs-message
+- Google event IDs: https://developers.google.com/workspace/calendar/api/guides/create-events
+- Stripe hosted Checkout: https://docs.stripe.com/api/checkout/sessions/create

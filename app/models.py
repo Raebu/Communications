@@ -105,6 +105,7 @@ class Message(Base):
     peer: Mapped[str] = mapped_column(String(30))
     direction: Mapped[str] = mapped_column(String(10))
     channel: Mapped[str] = mapped_column(String(20), default="sms")
+    sensitive_payload: Mapped[str] = mapped_column(Text, default="")
     body: Mapped[str] = mapped_column(Text)
     sid: Mapped[str | None] = mapped_column(String(40), unique=True)
     request_key: Mapped[str | None] = mapped_column(String(100))
@@ -224,6 +225,7 @@ class VoiceSession(Base):
     token: Mapped[str] = mapped_column(String(64))
     previous_token: Mapped[str] = mapped_column(String(64), default="")
     last_xml: Mapped[str] = mapped_column(Text, default="")
+    pending_action_id: Mapped[str] = mapped_column(String(36), default="")
     status: Mapped[str] = mapped_column(String(30), default="active")
 
 
@@ -235,6 +237,7 @@ class Conversation(Base):
     number_id: Mapped[str] = mapped_column(ForeignKey("numbers.id"))
     channel: Mapped[str] = mapped_column(String(20), default="sms")
     peer: Mapped[str] = mapped_column(String(30))
+    customer_id: Mapped[str | None] = mapped_column(ForeignKey("customers.id", name="fk_conversation_customer"), index=True)
     mode: Mapped[str] = mapped_column(String(20), default="ai")
     assigned_to: Mapped[str] = mapped_column(String(36), default="")
     reason: Mapped[str] = mapped_column(String(100), default="")
@@ -275,6 +278,7 @@ class Booking(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     department_id: Mapped[str] = mapped_column(ForeignKey("departments.id"))
+    customer_id: Mapped[str | None] = mapped_column(ForeignKey("customers.id", name="fk_booking_customer"), index=True)
     peer: Mapped[str] = mapped_column(String(30))
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -319,4 +323,109 @@ class Integration(Base):
     encrypted_config: Mapped[str] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     last_status: Mapped[str] = mapped_column(String(30), default="unverified")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class Customer(Base):
+    __tablename__ = "customers"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    preferences: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class IdentityChallenge(Base):
+    __tablename__ = "identity_challenges"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    source_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class CatalogItem(Base):
+    __tablename__ = "catalog_items"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    integration_id: Mapped[str] = mapped_column(ForeignKey("integrations.id"))
+    name: Mapped[str] = mapped_column(String(100))
+    price_id: Mapped[str] = mapped_column(String(100))
+    amount: Mapped[int] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(3), default="gbp")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class PaymentRequest(Base):
+    __tablename__ = "payment_requests"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    action_id: Mapped[str] = mapped_column(ForeignKey("action_jobs.id"), unique=True)
+    catalog_id: Mapped[str] = mapped_column(ForeignKey("catalog_items.id"))
+    session_id: Mapped[str] = mapped_column(String(200), unique=True)
+    url: Mapped[str] = mapped_column(Text)
+    amount: Mapped[int] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(3))
+    status: Mapped[str] = mapped_column(String(30), default="open")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class KnowledgeRevision(Base):
+    __tablename__ = "knowledge_revisions"
+    __table_args__ = (UniqueConstraint("knowledge_id", "version"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    knowledge_id: Mapped[str] = mapped_column(ForeignKey("knowledge.id"))
+    version: Mapped[int] = mapped_column(Integer)
+    snapshot: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class FinancialEntry(Base):
+    __tablename__ = "financial_entries"
+    __table_args__ = (UniqueConstraint("tenant_id", "reference"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(10))
+    category: Mapped[str] = mapped_column(String(20))
+    amount: Mapped[int] = mapped_column(Integer)
+    period: Mapped[str] = mapped_column(String(7))
+    reference: Mapped[str] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class CustomerAPIKey(Base):
+    __tablename__ = "customer_api_keys"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    id: Mapped[str] = mapped_column(String(36), unique=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    scopes: Mapped[str] = mapped_column(String(100))
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class EvaluationSchedule(Base):
+    __tablename__ = "evaluation_schedules"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), primary_key=True)
+    cases: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(20), default="idle")
+    last_result: Mapped[str] = mapped_column(Text, default="")
+    failures: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class WebhookJob(Base):
+    __tablename__ = "webhook_jobs"
+    __table_args__ = (UniqueConstraint("integration_id", "action_id"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    integration_id: Mapped[str] = mapped_column(ForeignKey("integrations.id"))
+    action_id: Mapped[str] = mapped_column(ForeignKey("action_jobs.id"))
+    payload: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="queued")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

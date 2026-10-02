@@ -36,9 +36,13 @@ class Settings:
     ai_model: str = os.getenv("AI_MODEL", "")
     voice_streaming_enabled: bool = os.getenv("VOICE_STREAMING_ENABLED", "false") == "true"
     ai_daily_requests: int = int(os.getenv("AI_DAILY_REQUESTS", "100"))
+    message_retention_days: int = int(os.getenv("MESSAGE_RETENTION_DAYS", "90"))
+    voice_retention_days: int = int(os.getenv("VOICE_RETENTION_DAYS", "30"))
     registration_enabled: bool = os.getenv("REGISTRATION_ENABLED", "false") == "true"
 
     def validate(self):
+        if not 31 <= self.message_retention_days <= 365 or not 1 <= self.voice_retention_days <= 90:
+            raise RuntimeError("Retention must be 31–365 days for messages and 1–90 days for voice")
         if self.environment == "production":
             if not self.public_url.startswith("https://") or not self.encryption_key:
                 raise RuntimeError("Production requires HTTPS PUBLIC_URL and ENCRYPTION_KEY")

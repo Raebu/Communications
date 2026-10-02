@@ -19,6 +19,11 @@ from .ai import router as ai_router, start_voice, voice_turn, configured as ai_c
 from .models import AIProfile, Conversation
 from .autonomy import router as autonomy_router, inbound_ai
 from .relay import router as relay_router
+from .payments import router as payments_router
+from .operations import router as operations_router
+from .quality import router as quality_router
+from .knowledge_import import router as knowledge_import_router
+from .outbound_hooks import router as outbound_hooks_router
 from .models import Call, WorkerHeartbeat, Audit, Base, DB, Event, Message, Number, Order, Session, Suppression, Tenant, User, engine, now
 from .providers import create_subaccount, parent_client, tenant_client
 from .security import csrf, current_user, decrypt, hash_password, rate_limit, verify_password, verify_totp
@@ -35,13 +40,18 @@ async def lifespan(app):
     yield
 
 
-app = FastAPI(title="Raeburn Communications", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="Raeburn Communications", version="0.5.0", lifespan=lifespan)
 app.include_router(accounts_router)
 app.include_router(ai_router)
 app.include_router(autonomy_router)
 
 app.include_router(relay_router)
 app.include_router(integrations_router)
+app.include_router(payments_router)
+app.include_router(operations_router)
+app.include_router(quality_router)
+app.include_router(knowledge_import_router)
+app.include_router(outbound_hooks_router)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
@@ -791,3 +801,8 @@ async def relay_fallback(request: Request):
             remaining = 0
         xml = fallback_xml(call, remaining)
     return Response(xml, media_type="application/xml")
+
+
+@app.get("/payment-status")
+def payment_status():
+    return FileResponse("app/static/payment-status.html")

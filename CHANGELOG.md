@@ -1,3 +1,13 @@
+## 0.5.0
+
+- Confirmed call-scoped voice actions; interruptions revoke proposals and verified channels control private appointment access.
+- Single-use cross-channel proof, encrypted shared preferences, unlink/forget controls and redacted verification outbox.
+- Tenant merchant approved GBP catalogue, hosted Checkout and signed/provider-retrieved payment receipts.
+- Durable signed business hooks with pinned public IP/TLS and scoped, expiring CRM API keys.
+- Immutable knowledge revisions, draft text/HTML imports, opt-in daily regression checks and automatic pause after repeated failure.
+- Owner action review/cancellation, invoice-backed finance ledger, portal controls, retention and expanded privacy export.
+- Migrations 0008–0013 and integration/identity/payment/quality/delivery tests.
+
 ## Unreleased
 
 - Durable, explicitly consented SMS appointment reminders with UK quiet hours, duplicate protection and stale-booking cancellation.

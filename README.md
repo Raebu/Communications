@@ -85,3 +85,7 @@ Version 0.3 adds tenant-specific SMS reply drafts and inbound turn-based voice A
 ## Autonomous service (0.4)
 
 Owner-enabled automatic replies, approved knowledge, conversation takeover/pause, internal department booking calendars, customer-confirmed booking/cancellation/rescheduling, requested email outbox, lead capture, operational receipts and regression evaluation are implemented. ConversationRelay streaming and approved WhatsApp/RCS bindings are available in code, with live activation prerequisites. See [autonomous delivery status](docs/AUTONOMY.md) for the complete scope and remaining work.
+
+## Autonomous commercial workflows (0.5)
+
+The receptionist now supports call-scoped confirmed actions, proof-based cross-channel appointment/preference access, tenant merchant Checkout and paid-state receipts, signed business integration events, scoped CRM API keys, immutable knowledge revisions, draft text/HTML imports, daily quality checks, review controls and content retention. Owner controls are available in the portal. Apply migrations through 0013. See [delivery and activation status](docs/AUTONOMY.md) for exact behaviour, setup and outstanding extensions. The code release is not a public live-service activation.

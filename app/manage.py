@@ -31,6 +31,16 @@ def main():
     calendar.add_argument("department_id")
     calendar.add_argument("calendar_id")
     calendar.add_argument("--name", default="Google Calendar")
+    merchant = sub.add_parser("connect-stripe-merchant")
+    merchant.add_argument("tenant_id")
+    merchant.add_argument("account_id")
+    merchant.add_argument("--name", default="Stripe merchant")
+    hook = sub.add_parser("connect-webhook")
+    hook.add_argument("tenant_id")
+    hook.add_argument("url")
+    hook.add_argument("public_ip")
+    hook.add_argument("--name", default="Business integration")
+    hook.add_argument("--receiver-idempotent", action="store_true")
     args = parser.parse_args()
     if args.command == "check-config":
         from .config import settings
@@ -42,6 +52,59 @@ def main():
         Base.metadata.create_all(engine)
         return
     with DB.begin() as db:
+        if args.command == "connect-webhook":
+            from .outbound_hooks import configuration
+            from .security import encrypt
+
+            tenant = db.get(Tenant, args.tenant_id)
+            if not tenant:
+                raise SystemExit("Tenant not found")
+            cfg = configuration(args.url, args.public_ip, getpass.getpass("Receiver signing secret (at least 32 characters): "))
+            cfg["receiver_idempotent"] = args.receiver_idempotent
+            integration = Integration(
+                tenant_id=tenant.id,
+                kind="outbound_webhook",
+                name=args.name,
+                enabled=True,
+                encrypted_config=encrypt(cfg),
+                last_status="configured",
+            )
+            db.add(integration)
+            db.flush()
+            db.add(Audit(tenant_id=tenant.id, actor="operator-cli", action="webhook.connected", detail=integration.id))
+            print("Signed business integration configured. Verify receipt and receiver idempotency before use.")
+            return
+        if args.command == "connect-stripe-merchant":
+            import stripe
+            from .config import settings
+            from .security import encrypt
+
+            tenant = db.get(Tenant, args.tenant_id)
+            if not tenant:
+                raise SystemExit("Tenant not found")
+            key = getpass.getpass("Authorised restricted merchant API key: ")
+            if not key.startswith("rk_") or (settings.environment == "production" and not key.startswith("rk_live_")):
+                raise SystemExit("Use a restricted key; production requires live mode")
+            api = stripe.StripeClient(key, max_network_retries=0)
+            account = api.v1.accounts.retrieve(args.account_id)
+            if account["id"] != args.account_id:
+                raise SystemExit("Merchant account does not match")
+            secret = getpass.getpass("Merchant webhook signing secret: ")
+            if not secret.startswith("whsec_"):
+                raise SystemExit("Invalid signing secret")
+            integration = Integration(
+                tenant_id=tenant.id,
+                kind="stripe_merchant",
+                name=args.name,
+                enabled=True,
+                last_status="verified",
+                encrypted_config=encrypt({"key": key, "webhook_secret": secret, "account_id": account["id"]}),
+            )
+            db.add(integration)
+            db.flush()
+            db.add(Audit(tenant_id=tenant.id, actor="operator-cli", action="merchant.connected", detail=integration.id))
+            print("Merchant connected. Configure webhook endpoint /webhooks/stripe/merchant/" + integration.id)
+            return
         if args.command == "connect-google-calendar":
             from .integrations import GoogleCalendar
             from .security import encrypt
