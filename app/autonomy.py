@@ -152,7 +152,7 @@ def knowledge_profile(db, p, query):
 
 
 def queue_reply(db, t, m, body, allow_handoff=False):
-    from .main import segment_count
+    from .main import segment_count, message_units
 
     n = db.get(Number, m.number_id)
     p = db.get(AIProfile, t.id)
@@ -182,12 +182,19 @@ def queue_reply(db, t, m, body, allow_handoff=False):
     ).all()
     count = segment_count(body)
     if (
-        sum(segment_count(x.body) for x in rows) + count > settings.sms_monthly_segments
-        or sum(segment_count(x.body) for x in rows if x.created_at.replace(tzinfo=timezone.utc) >= day) + count > 100
+        sum(message_units(x) for x in rows) + count > settings.sms_monthly_segments
+        or sum(message_units(x) for x in rows if x.created_at.replace(tzinfo=timezone.utc) >= day) + count > 100
     ):
         raise RuntimeError("SMS allowance exhausted")
     result = Message(
-        tenant_id=t.id, number_id=m.number_id, peer=m.peer, channel=m.channel, direction="outbound", body=body, request_key=key
+        tenant_id=t.id,
+        number_id=m.number_id,
+        peer=m.peer,
+        channel=m.channel,
+        direction="outbound",
+        body=body,
+        segment_units=count,
+        request_key=key,
     )
     db.add(result)
     db.add(Audit(tenant_id=t.id, actor="ai", action="ai.reply.queued", detail=m.id))

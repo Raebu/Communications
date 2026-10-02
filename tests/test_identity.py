@@ -25,7 +25,11 @@ def test_proof_is_single_use_and_preference_is_private(setup_ai, monkeypatch):
     assert inbound(c, t, "LINK", "SMproof").status_code == 200
     with DB() as db:
         token = code(db)
-        assert token not in db.scalar(select(Message).where(Message.direction == "outbound")).body
+        message = db.scalar(select(Message).where(Message.direction == "outbound"))
+        assert token not in message.body
+        from app.main import message_units, segment_count
+
+        assert message_units(message) == segment_count(decrypt(message.sensitive_payload)["body"])
     assert other_channel(c, t, "LINK " + token, "SMredeem").status_code == 200
     with DB() as db:
         threads = db.scalars(select(Conversation)).all()

@@ -105,6 +105,7 @@ class Message(Base):
     peer: Mapped[str] = mapped_column(String(30))
     direction: Mapped[str] = mapped_column(String(10))
     channel: Mapped[str] = mapped_column(String(20), default="sms")
+    segment_units: Mapped[int] = mapped_column(Integer, default=0)
     sensitive_payload: Mapped[str] = mapped_column(Text, default="")
     body: Mapped[str] = mapped_column(Text)
     sid: Mapped[str | None] = mapped_column(String(40), unique=True)

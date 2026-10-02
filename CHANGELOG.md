@@ -6,7 +6,7 @@
 - Durable signed business hooks with pinned public IP/TLS and scoped, expiring CRM API keys.
 - Immutable knowledge revisions, draft text/HTML imports, opt-in daily regression checks and automatic pause after repeated failure.
 - Owner action review/cancellation, invoice-backed finance ledger, portal controls, retention and expanded privacy export.
-- Migrations 0008–0013 and integration/identity/payment/quality/delivery tests.
+- Migrations 0008–0014 and integration/identity/payment/quality/delivery tests.
 
 ## Unreleased
 

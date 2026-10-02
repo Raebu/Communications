@@ -21,7 +21,7 @@ def test_hook_signature_public_pin_and_no_redirect(monkeypatch):
     connection.getresponse.return_value.status = 302
     monkeypatch.setattr(outbound_hooks, "PinnedHTTPS", lambda host, address: connection)
     cfg = outbound_hooks.configuration("https://crm.example.test/events", "1.1.1.1", "x" * 32)
-    assert outbound_hooks.deliver(cfg, "event-id", {"type": "test"}) == 302
+    assert outbound_hooks.deliver_now(cfg, "event-id", {"type": "test"}) == 302
     args = connection.request.call_args.args
     headers = args[3]
     expected = hmac.new(b"x" * 32, headers["X-Raeburn-Timestamp"].encode() + b".event-id." + args[2], hashlib.sha256).hexdigest()
@@ -63,3 +63,19 @@ def test_action_event_is_durable_and_unknown_delivery_not_retried(setup_ai, monk
         j = db.scalar(select(WebhookJob))
         assert j.status == "review" and j.attempts == 1
     assert c.get("/api/integration-deliveries").status_code == 200
+
+
+def test_delivery_has_process_wall_clock_deadline(monkeypatch):
+    import subprocess
+
+    calls = []
+
+    def timed_out(*args, **kwargs):
+        calls.append(kwargs)
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(outbound_hooks.subprocess, "run", timed_out)
+    with pytest.raises(subprocess.TimeoutExpired):
+        outbound_hooks.deliver({"url": "https://crm.example.test", "address": "1.1.1.1", "secret": "x" * 32}, "event", {})
+    assert calls[0]["timeout"] == 15
+    assert calls[0]["capture_output"] is True

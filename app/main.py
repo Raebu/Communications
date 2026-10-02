@@ -473,13 +473,13 @@ def send(data: Send, user=Depends(current_user)):
         daily = db.scalars(
             select(Message).where(Message.tenant_id == t.id, Message.direction == "outbound", Message.created_at >= day)
         ).all()
-        if sum(segment_count(m.body) for m in daily) + segment_count(data.body) > 100:
+        if sum(message_units(m) for m in daily) + segment_count(data.body) > 100:
             raise HTTPException(429, "Daily SMS allowance reached")
         month = day.replace(day=1)
         monthly = db.scalars(
             select(Message).where(Message.tenant_id == t.id, Message.direction == "outbound", Message.created_at >= month)
         ).all()
-        if sum(segment_count(m.body) for m in monthly) + segment_count(data.body) > settings.sms_monthly_segments:
+        if sum(message_units(m) for m in monthly) + segment_count(data.body) > settings.sms_monthly_segments:
             raise HTTPException(429, "Monthly SMS allowance reached")
         m = Message(
             tenant_id=t.id,
@@ -487,6 +487,7 @@ def send(data: Send, user=Depends(current_user)):
             peer=data.peer,
             direction="outbound",
             body=data.body,
+            segment_units=segment_count(data.body),
             channel=data.channel,
             request_key=data.request_key,
         )
@@ -498,6 +499,10 @@ def send(data: Send, user=Depends(current_user)):
         thread.mode, thread.assigned_to, thread.reason = "human", user.id, "staff_reply"
         audit(db, user, "message.queued", m.id)
         return {"id": m.id, "status": m.status}
+
+
+def message_units(message):
+    return message.segment_units or segment_count(message.body)
 
 
 def segment_count(body):
@@ -674,7 +679,7 @@ def usage(user=Depends(current_user)):
         ).all()
         calls = db.scalars(select(Call).where(Call.tenant_id == user.tenant_id, Call.created_at >= month)).all()
         return {
-            "sms_segments": sum(segment_count(m.body) for m in sms),
+            "sms_segments": sum(message_units(m) for m in sms),
             "sms_allowance": settings.sms_monthly_segments,
             "voice_minutes": sum(c.billed_minutes if c.status == "completed" else c.reserved_minutes for c in calls),
             "voice_allowance": settings.voice_monthly_minutes,

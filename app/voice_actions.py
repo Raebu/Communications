@@ -52,7 +52,20 @@ def decision(sid, speech, history):
         if speech.lower().startswith("verify code "):
             from .identity import redeem
 
-            code = re.sub(r"[^0-9]", "", speech[12:])
+            words = {
+                "zero": "0",
+                "oh": "0",
+                "one": "1",
+                "two": "2",
+                "three": "3",
+                "four": "4",
+                "five": "5",
+                "six": "6",
+                "seven": "7",
+                "eight": "8",
+                "nine": "9",
+            }
+            code = "".join(words.get(word, word) for word in re.findall(r"[a-z]+|[0-9]", speech[12:].lower()))
             return redeem(db, t, c, code) if len(code) == 8 else "Say verify code followed by eight digits."
         pending = db.get(ActionJob, session.pending_action_id) if session.pending_action_id else None
         confirm = re.sub(r"[^a-z ]", "", speech.lower()).strip() == "confirm this action"

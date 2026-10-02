@@ -43,7 +43,7 @@ Send `LINK` from an original messaging channel. The code is encrypted in the out
 
 ## Secure activation
 
-1. Apply migrations through **0013**, restart the API/worker, and run `python -m app.manage check-config`. Model endpoint/key, encryption key and platform providers belong in the protected server configuration, never repository files or chat.
+1. Apply migrations through **0014**, restart the API/worker, and run `python -m app.manage check-config`. Model endpoint/key, encryption key and platform providers belong in the protected server configuration, never repository files or chat.
 2. Configure the actual model and approved business facts. Enable the profile only for an approved, currently paid tenant. Autonomous and streaming voice are independent owner/operator controls.
 3. Connect an authorised Google department calendar with `python -m app.manage connect-google-calendar <department-id> <calendar-id>`. Private prompts request OAuth client credentials and an already authorised refresh token. The command verifies free/busy, encrypts credentials and binds one tenant. It does not manufacture a consent grant.
 4. Complete Twilio ConversationRelay onboarding, expose HTTPS/WSS, test signed setup/prompt/interrupt/end events and set `VOICE_STREAMING_ENABLED=true`. Calls disclose AI and offer zero transfer. Without a forwarding destination, the safe fallback ends the call.

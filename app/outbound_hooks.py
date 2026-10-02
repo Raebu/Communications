@@ -7,6 +7,8 @@ import ipaddress
 import json
 import socket
 import ssl
+import subprocess
+import sys
 from datetime import timedelta, timezone
 from urllib.parse import urlparse
 from sqlalchemy import select
@@ -51,7 +53,7 @@ class PinnedHTTPS(http.client.HTTPSConnection):
             raise
 
 
-def deliver(cfg, event_id, payload):
+def deliver_now(cfg, event_id, payload):
     configuration(cfg["url"], cfg["address"], cfg["secret"])
     parsed = urlparse(cfg["url"])
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
@@ -78,6 +80,19 @@ def deliver(cfg, event_id, payload):
         return response.status
     finally:
         conn.close()
+
+
+def deliver(cfg, event_id, payload):
+    # Kill the isolated sender at the wall-clock deadline, including slow-drip headers/body.
+    result = subprocess.run(
+        [sys.executable, "-m", "app.outbound_hooks"],
+        input=json.dumps({"config": cfg, "event_id": event_id, "payload": payload}),
+        text=True,
+        capture_output=True,
+        timeout=15,
+        check=True,
+    )
+    return int(result.stdout.strip())
 
 
 def enqueue(db, t, action, conversation, receipt):
@@ -129,12 +144,26 @@ def webhook_one():
         # Never retry a crash after submission without receiver-side idempotency reconciliation.
         j.status, j.attempts = "sending", j.attempts + 1
         cfg, payload, job_id = decrypt(i.encrypted_config), decrypt(j.payload), j.id
-    try:
-        status = deliver(cfg, job_id, payload)
-    except Exception:
-        status = None
     with DB.begin() as db:
-        j = db.get(WebhookJob, job_id)
+        t = db.scalar(select(Tenant).where(Tenant.id == candidate.tenant_id).with_for_update())
+        j = db.scalar(select(WebhookJob).where(WebhookJob.id == job_id).with_for_update())
+        integration, profile = db.get(Integration, j.integration_id), db.get(AIProfile, t.id)
+        if (
+            not integration.enabled
+            or t.status != "approved"
+            or t.billing_status != "active"
+            or not profile
+            or not profile.enabled
+            or not profile.autonomous
+            or profile.paused
+        ):
+            j.status = "cancelled"
+            return True
+        cfg = decrypt(integration.encrypted_config)
+        try:
+            status = deliver(cfg, job_id, payload)
+        except Exception:
+            status = None
         if status is not None and 200 <= status < 300:
             j.status = "acknowledged"
         elif (
@@ -160,3 +189,8 @@ def deliveries(user=Depends(current_user)):
                 select(WebhookJob).where(WebhookJob.tenant_id == user.tenant_id).order_by(WebhookJob.created_at.desc()).limit(200)
             )
         ]
+
+
+if __name__ == "__main__":
+    data = json.loads(sys.stdin.read(32001))
+    print(deliver_now(data["config"], data["event_id"], data["payload"]))

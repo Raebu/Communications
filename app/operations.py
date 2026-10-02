@@ -270,6 +270,10 @@ def retention_one():
                     Message.tenant_id == t.id, Message.created_at < now() - timedelta(days=settings.message_retention_days)
                 )
             ):
+                if m.direction == "outbound":
+                    from .main import message_units
+
+                    m.segment_units = message_units(m)
                 m.body, m.sensitive_payload = "[Content removed by retention policy]", ""
             old_messages = select(Message.id).where(
                 Message.tenant_id == t.id, Message.created_at < now() - timedelta(days=settings.message_retention_days)
