@@ -1,3 +1,7 @@
+# 0.4.0 — 2026-10-02
+
+Autonomous message decision engine, durable customer-confirmed actions, department booking calendars, knowledge approval/expiry/versioning, staff takeover, global pause, operational dashboard, requested SMTP emails and leads. Added signed ConversationRelay WebSocket streaming, interrupt cancellation and fallback; approved WhatsApp/RCS sender bindings with WhatsApp window checks; regression evaluation API and tenant export. Live configuration and several expanded scope items remain outstanding, as recorded in docs/AUTONOMY.md.
+
 # 0.3.0
 
 - Tenant AI profiles and SMS drafts with bounded model context, durable worker and owner review.

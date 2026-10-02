@@ -48,17 +48,18 @@ $('#billing-form').onsubmit = e => { e.preventDefault(); act(async () => { const
 $('#billing-portal').onclick = () => act(async () => { const value = await api('/api/billing/portal', 'POST'); location.assign(value.url); });
 async function loadThreads() {
   const threads = await api('/api/threads'); $('#threads').replaceChildren();
-  for (const t of threads) { const b = button(t.peer, async () => { selected=t; $('#thread-title').textContent=t.peer; $('#send-form').elements.peer.value=t.peer; $('#send-number').value=t.number_id; await loadMessages(); }, true); b.classList.add('thread'); b.append(element('small', t.preview)); $('#threads').append(b); }
+  for (const t of threads) { const b = button(t.peer, async () => { selected=t; $('#thread-title').textContent=t.peer; $('#send-form').elements.peer.value=t.peer; $('#send-number').value=t.number_id; await loadMessages(); }, true);
+    if(t.conversation_id){b.append(element('small','Owner: '+t.mode));const controls=element('div');for(const mode of ['human','paused','ai'])controls.append(button(mode,async()=>{await api('/api/conversations/'+t.conversation_id+'/mode','PUT',{mode});await loadThreads();},true));$('#threads').append(controls);} b.classList.add('thread'); b.append(element('small', t.preview)); $('#threads').append(b); }
   if (!threads.length) $('#threads').append(element('p', 'No conversations yet. Start one using the message form.'));
 }
 async function loadMessages() {
   if (!selected) return;
-  const messages = await api('/api/messages?' + new URLSearchParams({number_id:selected.number_id,peer:selected.peer})); $('#messages').replaceChildren();
+  const messages = await api('/api/messages?' + new URLSearchParams({number_id:selected.number_id,peer:selected.peer,channel:selected.channel||"sms"})); $('#messages').replaceChildren();
   lastInboundId=messages.filter(m=>m.direction==='inbound').at(-1)?.id;
   for (const m of messages) { const bubble = element('div', undefined, 'bubble '+m.direction); bubble.append(element('span',m.body), element('small',`${m.status} · ${new Date(m.at).toLocaleString()}`)); $('#messages').append(bubble); }
   $('#messages').scrollTop = $('#messages').scrollHeight;
 }
-$('#send-form').onsubmit = e => { e.preventDefault(); act(async () => { const data=fields(e.target); data.consent_confirmed=Boolean(data.consent_confirmed); data.request_key=crypto.randomUUID(); await api('/api/messages','POST',data); selected={number_id:data.number_id,peer:data.peer}; e.target.elements.body.value=''; await loadThreads(); await loadMessages(); notice('Message queued for delivery.'); }); };
+$('#send-form').onsubmit = e => { e.preventDefault(); act(async () => { const data=fields(e.target); data.consent_confirmed=Boolean(data.consent_confirmed); data.request_key=crypto.randomUUID();data.channel=selected?.channel||"sms"; await api('/api/messages','POST',data); selected={number_id:data.number_id,peer:data.peer,channel:data.channel}; e.target.elements.body.value=''; await loadThreads(); await loadMessages(); notice('Message queued for delivery.'); }); };
 async function loadAdmin() {
   const tenants=await api('/api/admin/tenants'); $('#admin-customers').replaceChildren();
   for (const t of tenants) { const card=element('article',undefined,'customer'); card.append(element('h2',t.name),element('p',`${t.legal_name} · ${t.address} · ${t.status} · billing ${t.billing_status}`)); if (!t.connected) card.append(button('Connect Twilio subaccount',async()=>{await api(`/api/admin/tenants/${t.id}/connect`,'POST');await loadAdmin();}));
@@ -86,10 +87,11 @@ let lastInboundId, draftPoll;
 async function loadAI() {
   const p=await api('/api/ai/profile');
   $('#ai-provider-status').textContent=p.configured?'AI provider configured.':'AI provider needs to be configured before activation.';
-  for(const key of ['business_info','greeting']) $('#ai-form').elements[key].value=p[key];
-  for(const key of ['enabled','voice_enabled']) $('#ai-form').elements[key].checked=p[key];
+  for(const key of ['business_info','greeting','language']) $('#ai-form').elements[key].value=p[key];
+  for(const key of ['enabled','voice_enabled','autonomous','paused']) $('#ai-form').elements[key].checked=p[key];
+  await loadOperations();
 }
-$('#ai-form').onsubmit=e=>{e.preventDefault();act(async()=>{const d=fields(e.target);d.enabled=Boolean(d.enabled);d.voice_enabled=Boolean(d.voice_enabled);await api('/api/ai/profile','PUT',d);notice('AI settings saved.');});};
+$('#ai-form').onsubmit=e=>{e.preventDefault();act(async()=>{const d=fields(e.target);d.enabled=Boolean(d.enabled);d.voice_enabled=Boolean(d.voice_enabled);d.autonomous=Boolean(d.autonomous);d.paused=Boolean(d.paused);await api('/api/ai/profile','PUT',d);notice('AI settings saved.');});};
 $('#draft-ai').onclick=()=>act(async()=>{
   if(!lastInboundId) throw Error('Select a conversation with a customer message first.');
   const thread={...selected};
@@ -104,3 +106,11 @@ $('#draft-ai').onclick=()=>act(async()=>{
     else if(++attempts>60){clearInterval(draftPoll);notice('AI worker is unavailable. Try again later.');}
   }),2000);
 });
+
+async function loadOperations(){
+ const [metrics,books,actions,leads,sources,depts]=await Promise.all(['/api/operations','/api/bookings','/api/actions','/api/leads','/api/knowledge','/api/departments'].map(p=>api(p)));
+ $('#ai-metrics').replaceChildren();for(const [key,value] of Object.entries(metrics))$('#ai-metrics').append(element('p',key.replaceAll('_',' ')+': '+value));
+ for(const [id,rows,render] of [['ai-bookings',books,b=>b.peer+' · '+new Date(b.starts_at).toLocaleString()+' · '+b.status],['ai-actions',actions,a=>a.kind+' · '+a.status+' · '+a.receipt],['ai-leads',leads,l=>l.summary+' · '+l.status],['knowledge-list',sources,k=>k.title+' · v'+k.version+' · '+(k.approved?'approved':'draft')],['department-list',depts,d=>d.name+' · '+(d.bookings_enabled?'booking enabled':'disabled')]]){ $('#'+id).replaceChildren();for(const row of rows)$('#'+id).append(element('p',render(row))); }
+}
+$('#knowledge-form').onsubmit=e=>{e.preventDefault();act(async()=>{const d=fields(e.target);d.approved=Boolean(d.approved);await api('/api/knowledge','POST',d);e.target.reset();await loadOperations();});};
+$('#department-form').onsubmit=e=>{e.preventDefault();act(async()=>{const d=fields(e.target);for(const k of ['duration','opens','closes'])d[k]=Number(d[k]);d.bookings_enabled=Boolean(d.bookings_enabled);await api('/api/departments','POST',d);await loadOperations();});};

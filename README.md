@@ -81,3 +81,7 @@ Production adds email verification/recovery, administrator TOTP MFA, current-sta
 ## AI receptionist
 
 Version 0.3 adds tenant-specific SMS reply drafts and inbound turn-based voice AI, disabled by default. See [AI architecture and activation](docs/AI_ARCHITECTURE.md). No live model or telephony deployment is configured yet.
+
+## Autonomous service (0.4)
+
+Owner-enabled automatic replies, approved knowledge, conversation takeover/pause, internal department booking calendars, customer-confirmed booking/cancellation/rescheduling, requested email outbox, lead capture, operational receipts and regression evaluation are implemented. ConversationRelay streaming and approved WhatsApp/RCS bindings are available in code, with live activation prerequisites. See [autonomous delivery status](docs/AUTONOMY.md) for the complete scope and remaining work.
