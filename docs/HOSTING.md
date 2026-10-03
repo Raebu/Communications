@@ -4,7 +4,7 @@ Approved public hostname: **connect.theraeburngroup.com**.
 
 ## Launch topology
 
-Run the existing Docker Compose stack on a dedicated DigitalOcean host in London. Caddy serves HTTPS and forwards HTTP and WebSocket traffic to FastAPI. The portal, API and provider callbacks share one origin. The separate continuous worker processes durable jobs; PostgreSQL stores application state.
+Run the application Docker Compose stack on a dedicated DigitalOcean host in London, with a dedicated Supabase PostgreSQL project. Use `compose.managed-db.yaml` and [SUPABASE.md](SUPABASE.md) for the approved managed-database direction; the original Compose stack remains available for a local database. Caddy serves HTTPS and forwards HTTP and WebSocket traffic to FastAPI. The portal, API and provider callbacks share one origin. The separate continuous worker processes durable jobs; Supabase PostgreSQL stores application state.
 
 This is the lowest-change deployment for the implemented service. It still requires a separately provisioned host, secure operator access, private runtime configuration, backup/restore acceptance and real provider acceptance tests. A single host is not highly available; a commercial availability commitment must reflect this until redundant infrastructure is validated.
 
