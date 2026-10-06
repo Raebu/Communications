@@ -416,11 +416,11 @@ def txt_matches(proof):
     return any(hmac.compare_digest(b''.join(record.strings), expected) for record in records)
 
 
-def director_match(report, officers):
+def director_match(report, officers, dob):
     doc, selfie = report.get('document') or {}, report.get('selfie') or {}
     if doc.get('status') != 'verified' or selfie.get('status') != 'verified':
         return False
-    dob = doc.get('dob') or {}
+    dob = dob or {}
     if not doc.get('first_name') or not doc.get('last_name') or not dob.get('month') or not dob.get('year'):
         return False
     target = norm(doc['last_name'] + doc['first_name'])
@@ -438,7 +438,8 @@ def reconcile_identity(proof, officers):
     if not proof.identity_session:
         return False
     api = identity_client()
-    session = api.v1.identity.verification_sessions.retrieve(proof.identity_session)
+    session = api.v1.identity.verification_sessions.retrieve(
+        proof.identity_session, {'expand': ['verified_outputs.dob']})
     expected_live = settings.environment == 'production'
     if (session.metadata.get('tenant_id') != proof.tenant_id or session.metadata.get('attempt') != proof.attempt
             or (expected_live and not session.livemode) or session.type != 'document'
@@ -452,7 +453,7 @@ def reconcile_identity(proof, officers):
     report = api.v1.identity.verification_reports.retrieve(session.last_verification_report)
     if report.get('verification_session') != proof.identity_session or (expected_live and not report.get('livemode')):
         raise ValueError('authority_mismatch')
-    if not director_match(report, officers):
+    if not director_match(report, officers, (session.verified_outputs or {}).get('dob')):
         raise ValueError('authority_mismatch')
     # Only retain contact names needed by the telecom provider, encrypted.
     contact = decrypt(proof.encrypted_contact)

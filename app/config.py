@@ -64,7 +64,7 @@ class Settings:
         if self.company_verification_enabled:
             if not all([self.companies_house_key, self.identity_key, self.smtp_host, self.email_from, self.encryption_key]):
                 raise RuntimeError("Company verification requires registry, identity and email configuration")
-            if self.environment == "production" and not self.identity_key.startswith(("rk_live_", "sk_live_")):
+            if self.environment == "production" and not self.identity_key.startswith("rk_live_"):
                 raise RuntimeError("Production company verification requires a live Stripe Identity key")
         if not 1 <= self.verification_daily_limit <= 100:
             raise RuntimeError("Verification daily limit must be 1–100")
