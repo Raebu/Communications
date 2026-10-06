@@ -24,9 +24,9 @@ from .operations import router as operations_router
 from .quality import router as quality_router
 from .knowledge_import import router as knowledge_import_router
 from .outbound_hooks import router as outbound_hooks_router
-from .models import Call, WorkerHeartbeat, Audit, Base, DB, Event, Message, Number, Order, Session, Suppression, Tenant, User, engine, now
+from .models import Call, WorkerHeartbeat, Audit, Base, EmailJob, DB, Event, Message, Number, Order, Session, Suppression, Tenant, User, engine, now
 from .providers import create_subaccount, parent_client, tenant_client
-from .security import csrf, current_user, decrypt, hash_password, rate_limit, verify_password, verify_totp
+from .security import csrf, current_user, decrypt, encrypt, hash_password, rate_limit, verify_password, verify_totp
 from .worker import within_budget
 from .accounts import router as accounts_router, queue_action
 from .billing import client as billing_client, integration_identifier, reconcile_subscription, subscription_from_invoice
@@ -198,12 +198,30 @@ class Profile(BaseModel):
 def profile(data: Profile, user=Depends(current_user)):
     require_owner(user)
     with DB.begin() as db:
-        t = db.get(Tenant, user.tenant_id)
+        t = db.scalar(select(Tenant).where(Tenant.id == user.tenant_id).with_for_update())
+        changed = any(getattr(t, key) != value for key, value in data.model_dump().items())
         for key, value in data.model_dump().items():
             setattr(t, key, value)
         # Changing legal identity requires renewed approval.
         t.status, t.bundle_sid = "pending", ""
         audit(db, user, "profile.updated")
+        if changed and settings.smtp_host and settings.encryption_key:
+            sender = settings.verification_email_from or settings.email_from
+            db.add(EmailJob(recipient=user.email, encrypted_payload=encrypt({
+                "from": sender,
+                "subject": "Your company details are with us — Raeburn Connect",
+                "body": "Thank you for sending your company details. They are now awaiting review. "
+                        "You can check your progress in your account, and we will contact you if we need anything else.\n\n"
+                        + settings.public_url + "/",
+            })))
+            if settings.company_review_email:
+                db.add(EmailJob(recipient=settings.company_review_email, encrypted_payload=encrypt({
+                    "from": sender,
+                    "subject": "Company review needed — Raeburn Connect",
+                    "body": "A company has submitted updated details for review. "
+                            "Sign in to the customer review dashboard to check the submission.\n\n"
+                            + settings.public_url + "/\n\nCompany reference: " + str(t.id),
+                })))
     return {"status": "pending_review"}
 
 
@@ -773,6 +791,7 @@ def service_info():
         "legal_name": settings.legal_business_name,
         "address": settings.legal_business_address,
         "support_email": settings.support_email,
+        "billing_email": settings.billing_email,
         "terms_url": settings.terms_url,
         "privacy_url": settings.privacy_url,
         "terms_version": settings.terms_version,

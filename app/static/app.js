@@ -120,7 +120,7 @@ if (actionToken && ['verify','reset'].includes(action)) {
   $('#new-password-label').hidden=action==='verify'; $('#recovery-title').textContent=action==='verify'?'Verify your email':'Set a new password';
   $('#recovery-form').onsubmit=e=>{e.preventDefault();act(async()=>{await api('/api/security/complete/'+action,'POST',{token:actionToken,password:fields(e.target).password||''}); location.assign('/');});};
 }
-api('/api/service').then(s=>{for(const [id,url] of [['terms-link',s.terms_url],['privacy-link',s.privacy_url]]){if(url&&url.startsWith('https://'))$( '#'+id).href=url;}$('#auth-toggle').hidden=!s.registration_open;}).catch(()=>{});
+api('/api/service').then(s=>{if(s.billing_email&&/^[^\s@]+@[^\s@]+$/.test(s.billing_email)){$('#billing-contact').href='mailto:'+s.billing_email;$('#billing-contact').hidden=false;}for(const [id,url] of [['terms-link',s.terms_url],['privacy-link',s.privacy_url]]){if(url&&url.startsWith('https://'))$( '#'+id).href=url;}$('#auth-toggle').hidden=!s.registration_open;}).catch(()=>{});
 
 let lastInboundId, draftPoll;
 async function loadAI() {

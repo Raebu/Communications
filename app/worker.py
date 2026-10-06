@@ -193,7 +193,10 @@ def email_one():
             job = db.get(EmailJob, job_id)
             payload = decrypt(job.encrypted_payload)
             message = EmailMessage()
-            message["From"], message["To"], message["Subject"] = settings.email_from, job.recipient, payload["subject"]
+            message["From"], message["To"], message["Subject"] = payload.get("from") or settings.email_from, job.recipient, payload["subject"]
+            reply_to = payload.get("reply_to") or settings.email_reply_to
+            if reply_to:
+                message["Reply-To"] = reply_to
             message.set_content(payload["body"])
             connection = smtplib.SMTP_SSL if settings.smtp_port == 465 else smtplib.SMTP
             with connection(settings.smtp_host, settings.smtp_port, timeout=15) as smtp:

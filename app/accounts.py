@@ -21,7 +21,8 @@ def queue_action(db, user, purpose):
     label = 'Verify your email' if purpose == 'verify' else 'Reset your password'
     url = settings.public_url + '/?action=' + purpose + '&token=' + token
     db.add(EmailJob(recipient=user.email, encrypted_payload=encrypt({
-        'subject': label + ' — Raeburn Communications',
+        'from': settings.verification_email_from or settings.email_from,
+        'subject': label + ' — Raeburn Connect',
         'body': label + ':\n\n' + url + '\n\nThis link expires in 30 minutes. If you did not request this, ignore this message.',
     })))
 

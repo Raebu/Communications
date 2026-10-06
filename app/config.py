@@ -22,6 +22,10 @@ class Settings:
     smtp_user: str = os.getenv("SMTP_USER", "")
     smtp_password: str = os.getenv("SMTP_PASSWORD", "")
     email_from: str = os.getenv("EMAIL_FROM", "")
+    email_reply_to: str = os.getenv("EMAIL_REPLY_TO", "")
+    verification_email_from: str = os.getenv("VERIFICATION_EMAIL_FROM", "")
+    company_review_email: str = os.getenv("COMPANY_REVIEW_EMAIL", "")
+    billing_email: str = os.getenv("BILLING_EMAIL", "")
     public_sales_enabled: bool = os.getenv("PUBLIC_SALES_ENABLED", "false") == "true"
     sms_monthly_segments: int = int(os.getenv("SMS_MONTHLY_SEGMENTS", "100"))
     voice_monthly_minutes: int = int(os.getenv("VOICE_MONTHLY_MINUTES", "30"))

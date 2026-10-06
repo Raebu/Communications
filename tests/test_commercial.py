@@ -154,3 +154,44 @@ def test_invoice_event_uses_current_subscription(monkeypatch):
     assert c.post('/webhooks/stripe',content='{}').status_code==200
     assert c.get('/api/me').json()['tenant']['billing_status']=='past_due'
     api.v1.subscriptions.retrieve.assert_called_once_with('sub_invoice',{'expand':['latest_invoice']})
+
+
+def test_company_review_email_is_encrypted_and_unchanged_submission_not_repeated(monkeypatch):
+    c, tenant_id = customer()
+    monkeypatch.setattr(settings, 'smtp_host', 'smtp.example.com')
+    monkeypatch.setattr(settings, 'verification_email_from', 'verification@example.com')
+    monkeypatch.setattr(settings, 'company_review_email', 'review@example.com')
+    data = {'legal_name': 'Example Limited', 'address': '12 Example Street, London', 'registration_number': '12345678'}
+    for _ in range(2):
+        assert c.put('/api/profile', json=data, headers=HEADERS).status_code == 200
+    with DB() as db:
+        jobs = db.scalars(select(EmailJob)).all()
+        assert len(jobs) == 2
+        assert {job.recipient for job in jobs} == {'one@example.com', 'review@example.com'}
+        for job in jobs:
+            assert 'awaiting review' not in job.encrypted_payload
+            assert decrypt(job.encrypted_payload)['from'] == 'verification@example.com'
+        alert = next(job for job in jobs if job.recipient == 'review@example.com')
+        assert tenant_id in decrypt(alert.encrypted_payload)['body']
+        assert data['address'] not in decrypt(alert.encrypted_payload)['body']
+
+
+def test_email_delivery_uses_sender_and_support_reply_to(monkeypatch):
+    from app.security import encrypt
+    from app.worker import email_one
+    monkeypatch.setattr(settings, 'smtp_host', 'smtp.example.com')
+    monkeypatch.setattr(settings, 'smtp_port', 465)
+    monkeypatch.setattr(settings, 'email_from', 'newphoneline@example.com')
+    monkeypatch.setattr(settings, 'email_reply_to', 'support@example.com')
+    smtp = MagicMock()
+    monkeypatch.setattr('app.worker.smtplib.SMTP_SSL', smtp)
+    with DB.begin() as db:
+        db.add(EmailJob(recipient='review@example.com', encrypted_payload=encrypt({
+            'from': 'verification@example.com', 'subject': 'Review', 'body': 'Please review',
+        })))
+    assert email_one()
+    message = smtp.return_value.__enter__.return_value.send_message.call_args.args[0]
+    assert message['From'] == 'verification@example.com'
+    assert message['Reply-To'] == 'support@example.com'
+    with DB() as db:
+        assert db.scalar(select(EmailJob)).status == 'sent'
