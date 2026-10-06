@@ -18,3 +18,5 @@ aside :where(button,a):focus-visible{outline-color:var(--accent)}
 .brand{color:#fcfbff}.brand>span{color:#e8e5f7}
 #billing-contact{color:#5131ba;text-decoration:underline;text-underline-offset:3px}
 @media(prefers-reduced-motion:reduce){button{transition:none}}
+
+#company-dns-name,#company-dns-value{display:block;overflow-wrap:anywhere;padding:12px;background:var(--surface);border:1px solid var(--line);border-radius:10px;font-size:13px}

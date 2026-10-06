@@ -11,3 +11,5 @@ httpx[socks]==0.28.1
 alembic==1.20.0
 websockets==17.1
 qrcode==8.2
+dnspython==2.8.0
+tldextract==5.3.1

@@ -42,6 +42,44 @@ class Tenant(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class CompanyVerification(Base):
+    __tablename__ = "company_verifications"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), primary_key=True)
+    attempt: Mapped[str] = mapped_column(String(36), default=uid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    profile_hash: Mapped[str] = mapped_column(String(64))
+    domain: Mapped[str] = mapped_column(String(253))
+    mailbox: Mapped[str] = mapped_column(String(254))
+    company_number: Mapped[str] = mapped_column(String(8))
+    number_type: Mapped[str] = mapped_column(String(20))
+    encrypted_contact: Mapped[str] = mapped_column(Text, default="")
+    dns_token: Mapped[str] = mapped_column(String(100))
+    email_sends: Mapped[int] = mapped_column(Integer, default=0)
+    email_token_hash: Mapped[str] = mapped_column(String(64), default="")
+    email_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    dns_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    registry_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    authority_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    identity_session: Mapped[str] = mapped_column(String(100), default="")
+    status: Mapped[str] = mapped_column(String(30), default="pending")
+    reason: Mapped[str] = mapped_column(String(80), default="")
+    next_check_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    reminders: Mapped[int] = mapped_column(Integer, default=0)
+    last_notified: Mapped[str] = mapped_column(String(100), default="")
+    provider_state: Mapped[str] = mapped_column(Text, default="")
+
+
+class VerifiedCompanyClaim(Base):
+    __tablename__ = "verified_company_claims"
+    company_number: Mapped[str] = mapped_column(String(8), primary_key=True)
+    domain: Mapped[str] = mapped_column(String(253), unique=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class User(Base):
     __tablename__ = "users"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)

@@ -17,7 +17,7 @@ def report():
     try:
         with DB() as db:
             revision = db.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        schema = revision == "0014"
+        schema = revision == "0015"
     except Exception:
         schema = False
     checks = {
@@ -30,6 +30,10 @@ def report():
         "platform_stripe_live_configured": settings.stripe_key.startswith(("rk_live_", "sk_live_"))
         and bool(settings.stripe_webhook_secret),
         "published_plan_prices_configured": bool(settings.business_price and settings.connect_price),
+        "company_verification_enabled": settings.company_verification_enabled,
+        "registry_configured": bool(settings.companies_house_key),
+        "director_identity_configured": bool(settings.identity_key),
+        "automated_telephone_review_enabled": settings.verification_auto_twilio,
         "smtp_configured": bool(settings.smtp_host and settings.email_from),
         "business_identity_configured": bool(settings.legal_business_name and settings.legal_business_address and settings.support_email),
         "published_terms_configured": bool(

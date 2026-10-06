@@ -38,6 +38,7 @@ async function load() {
     $('#mfa-qr').replaceChildren();
     $('#mfa-form').reset();
   }
+  try { await loadCompanyVerification(); } catch(error) { notice(error.message); }
   renderNumbers();
   if (me.email_verified) { const usage = await api('/api/usage'); $('#usage-summary').textContent = `${usage.sms_segments}/${usage.sms_allowance} SMS segments · ${usage.voice_minutes}/${usage.voice_allowance} call minutes this month`; }
   try { await loadOrders(); } catch(error) { notice(error.message); } show(me.email_verified ? 'overview' : 'account');
@@ -183,3 +184,37 @@ $('#department-form').onsubmit=e=>{e.preventDefault();act(async()=>{const d=fiel
 
 $('#knowledge-import-form').onsubmit=e=>{e.preventDefault();act(async()=>{await api('/api/knowledge/import','POST',new FormData(e.target));e.target.reset();await loadOperations();});};
 $('#quality-form').onsubmit=e=>{e.preventDefault();act(async()=>{const d=fields(e.target);const terms=s=>s.split(',').map(v=>v.trim()).filter(Boolean);await api('/api/ai/quality-schedule','PUT',{enabled:Boolean(d.enabled),cases:[{question:d.question,expected_terms:terms(d.expected_terms),forbidden_terms:terms(d.forbidden_terms)}]});await loadCommercialControls();});};
+
+async function loadCompanyVerification() {
+  const value = await api('/api/company-verification');
+  $('#company-verification-status').textContent = value.available ? value.message : 'Secure company verification is being configured. Activation remains subject to verification.';
+  $('#company-verification-explanation').textContent = value.explanation || '';
+  $('#company-verification-form').hidden = !value.available || !['not_started','expired','invalidated','held'].includes(value.status);
+  $('#company-proof-instructions').hidden = !value.available || !['pending','verified'].includes(value.status);
+  $('#company-identity').hidden = !value.identity_ready;
+  $('#company-resend-email').hidden = Boolean(value.checks?.business_email) || value.status !== 'pending';
+  if (value.checks) {
+    const labels = {business_email:'Business email',dns:'Domain control',company_register:'Company register',director_authority:'Director authority'};
+    $('#company-proof-checks').textContent = Object.entries(value.checks).map(([key,passed])=>`${labels[key]}: ${passed?'verified':'waiting'}`).join(' · ');
+    $('#company-dns-name').textContent = value.dns_name;
+    $('#company-dns-value').textContent = value.dns_value;
+    if (value.telephone_status) $('#company-verification-explanation').textContent += ' Telephone approval: ' + value.telephone_status.replaceAll('_',' ') + '.';
+  }
+}
+$('#company-verification-form').onsubmit = e => {e.preventDefault();act(async()=>{
+  const data = fields(e.target); data.authority_confirmed = e.target.elements.authority_confirmed.checked;
+  await api('/api/company-verification/start','POST',data); await load(); show('account');
+  notice('Thank you — your secure verification has started. Check your business email and add the DNS record shown below.');
+});};
+$('#company-resend-email').onclick = ()=>act(async()=>{await api('/api/company-verification/resend-email','POST');notice('Business email verification link requested.');});
+$('#company-identity').onclick = ()=>act(async()=>{const result=await api('/api/company-verification/identity','POST');const target=new URL(result.url);if(target.protocol!=='https:'||target.hostname!=='verify.stripe.com')throw Error('Unexpected identity provider address');location.assign(target.href);});
+const companyProofToken = actionParams.get('company_proof');
+if(companyProofToken){
+  history.replaceState(null,'',location.pathname);
+  $('#company-email-confirmation').hidden=false;
+  $('#company-confirm-email').onclick=()=>act(async()=>{
+    await api('/api/company-verification/confirm-email','POST',{token:companyProofToken});
+    $('#company-email-confirmation').hidden=true;await load();show('account');notice('Your business email is verified. Thank you.');
+  });
+}
+setInterval(()=>{if(me && !document.hidden && !$('#account').hidden)loadCompanyVerification().catch(()=>{});},30000);

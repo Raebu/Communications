@@ -16,7 +16,7 @@ from .config import settings
 from .integrations import router as integrations_router
 from .channels import enabled as channel_enabled
 from .ai import router as ai_router, start_voice, voice_turn, configured as ai_configured
-from .models import AIProfile, Conversation
+from .models import AIProfile, Conversation, CompanyVerification
 from .autonomy import router as autonomy_router, inbound_ai
 from .relay import router as relay_router
 from .payments import router as payments_router
@@ -29,6 +29,7 @@ from .providers import create_subaccount, parent_client, tenant_client
 from .security import csrf, current_user, decrypt, encrypt, hash_password, rate_limit, verify_password, verify_totp
 from .worker import within_budget
 from .accounts import router as accounts_router, queue_action
+from .company_verification import router as company_verification_router, invalidate, require_company_verified
 from .billing import client as billing_client, integration_identifier, reconcile_subscription, subscription_from_invoice
 
 
@@ -42,6 +43,7 @@ async def lifespan(app):
 
 app = FastAPI(title="Raeburn Communications", version="0.5.0", lifespan=lifespan)
 app.include_router(accounts_router)
+app.include_router(company_verification_router)
 app.include_router(ai_router)
 app.include_router(autonomy_router)
 
@@ -202,8 +204,11 @@ def profile(data: Profile, user=Depends(current_user)):
         changed = any(getattr(t, key) != value for key, value in data.model_dump().items())
         for key, value in data.model_dump().items():
             setattr(t, key, value)
+        if changed:
+            invalidate(db, t)
         # Changing legal identity requires renewed approval.
-        t.status, t.bundle_sid = "pending", ""
+        if changed:
+            t.status, t.bundle_sid = "pending", ""
         audit(db, user, "profile.updated")
         if changed and settings.smtp_host and settings.encryption_key:
             sender = settings.verification_email_from or settings.email_from
@@ -330,6 +335,7 @@ def checkout(data: Checkout, user=Depends(current_user)):
     stripe_client = billing_client()
     with DB.begin() as db:
         t = db.scalar(select(Tenant).where(Tenant.id == user.tenant_id).with_for_update())
+        require_company_verified(db, t)
         if t.billing_status == "active":
             raise HTTPException(409, "Manage your existing subscription in billing portal")
         if t.status != "approved":
@@ -770,6 +776,13 @@ def approve(tenant_id: str, data: Approval, user=Depends(current_user)):
         t = db.scalar(select(Tenant).where(Tenant.id == tenant_id).with_for_update())
         if not t or not t.legal_name or not t.address:
             raise HTTPException(409, "Complete customer legal identity first")
+        require_company_verified(db, t)
+        if settings.company_verification_enabled or settings.environment == 'production':
+            import json
+            evidence = db.get(CompanyVerification, t.id)
+            provider_state = json.loads(evidence.provider_state or '{}')
+            if provider_state.get('stage') != 'approved' or provider_state.get('bundle') != data.bundle_sid:
+                raise HTTPException(409, "Use the automatically verified customer bundle; unrelated bundle IDs cannot approve this company")
         client = tenant_client(t)
         bundle = client.numbers.v2.regulatory_compliance.bundles(data.bundle_sid).fetch()
         if bundle.status != "twilio-approved":

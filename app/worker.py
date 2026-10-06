@@ -54,6 +54,8 @@ def provision_one():
             t = db.get(Tenant, order.tenant_id)
             if t.status != "approved" or t.billing_status != "active" or t.bundle_type != order.number_type:
                 raise RuntimeError("Customer approval or subscription is no longer active")
+            from .company_verification import require_company_verified
+            require_company_verified(db, t)
             client = tenant_client(t)
             bundle = client.numbers.v2.regulatory_compliance.bundles(t.bundle_sid).fetch()
             if bundle.status != "twilio-approved":
@@ -226,7 +228,11 @@ def run():
             retention_one()
             if settings.stripe_key:
                 periodic_reconcile()
-            worked = reminder_one()
+            from .company_verification import verification_one, cleanup_one
+
+            worked = cleanup_one()
+            worked = verification_one() or worked
+            worked = reminder_one() or worked
             worked = action_one() or worked
             worked = draft_one() or worked
             from .quality import scheduled_one

@@ -42,11 +42,32 @@ class Settings:
     ai_daily_requests: int = int(os.getenv("AI_DAILY_REQUESTS", "100"))
     message_retention_days: int = int(os.getenv("MESSAGE_RETENTION_DAYS", "90"))
     voice_retention_days: int = int(os.getenv("VOICE_RETENTION_DAYS", "30"))
+    company_verification_enabled: bool = os.getenv("COMPANY_VERIFICATION_ENABLED", "false") == "true"
+    companies_house_key: str = os.getenv("COMPANIES_HOUSE_API_KEY", "")
+    identity_key: str = os.getenv("STRIPE_IDENTITY_KEY", "")
+    trusted_company_domains: str = os.getenv("TRUSTED_COMPANY_DOMAINS", "{}")
+    protected_domains: str = os.getenv("PROTECTED_DOMAINS", "theraeburngroup.com,techleadersindex.com,globaltechtop10.com")
+    verification_daily_limit: int = int(os.getenv("VERIFICATION_DAILY_LIMIT", "20"))
+    verification_auto_twilio: bool = os.getenv("VERIFICATION_AUTO_TWILIO", "false") == "true"
     registration_enabled: bool = os.getenv("REGISTRATION_ENABLED", "false") == "true"
 
     def validate(self):
         if not 31 <= self.message_retention_days <= 365 or not 1 <= self.voice_retention_days <= 90:
             raise RuntimeError("Retention must be 31–365 days for messages and 1–90 days for voice")
+        import json
+        try:
+            trusted = json.loads(self.trusted_company_domains)
+            if not isinstance(trusted, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in trusted.items()):
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise RuntimeError("TRUSTED_COMPANY_DOMAINS must be a company-number to domain JSON object") from None
+        if self.company_verification_enabled:
+            if not all([self.companies_house_key, self.identity_key, self.smtp_host, self.email_from, self.encryption_key]):
+                raise RuntimeError("Company verification requires registry, identity and email configuration")
+            if self.environment == "production" and not self.identity_key.startswith(("rk_live_", "sk_live_")):
+                raise RuntimeError("Production company verification requires a live Stripe Identity key")
+        if not 1 <= self.verification_daily_limit <= 100:
+            raise RuntimeError("Verification daily limit must be 1–100")
         if self.environment == "production":
             if not self.public_url.startswith("https://") or not self.encryption_key:
                 raise RuntimeError("Production requires HTTPS PUBLIC_URL and ENCRYPTION_KEY")
@@ -54,6 +75,7 @@ class Settings:
                 raise RuntimeError("Public registration requires PUBLIC_SALES_ENABLED launch configuration")
             if self.public_sales_enabled:
                 required = [
+                    self.company_verification_enabled,
                     self.smtp_host,
                     self.email_from,
                     self.twilio_sid,
