@@ -6,14 +6,13 @@ application idempotency key. An operator reconciles sending/review records.
 
 import logging
 import os
-import smtplib
 import socket
-from email.message import EmailMessage
 import time
 from datetime import timedelta
 from decimal import Decimal
 from sqlalchemy import or_, select
 from .config import settings
+from .email_delivery import send_email
 from .ai import draft_one
 from .autonomy import action_one, conversation, reminder_one
 from .models import AIProfile, Audit, DB, EmailJob, Message, Number, Order, Suppression, Tenant, WorkerHeartbeat, now
@@ -194,19 +193,7 @@ def email_one():
         with DB() as db:
             job = db.get(EmailJob, job_id)
             payload = decrypt(job.encrypted_payload)
-            message = EmailMessage()
-            message["From"], message["To"], message["Subject"] = payload.get("from") or settings.email_from, job.recipient, payload["subject"]
-            reply_to = payload.get("reply_to") or settings.email_reply_to
-            if reply_to:
-                message["Reply-To"] = reply_to
-            message.set_content(payload["body"])
-            connection = smtplib.SMTP_SSL if settings.smtp_port == 465 else smtplib.SMTP
-            with connection(settings.smtp_host, settings.smtp_port, timeout=15) as smtp:
-                if settings.smtp_port != 465:
-                    smtp.starttls()
-                if settings.smtp_user:
-                    smtp.login(settings.smtp_user, settings.smtp_password)
-                smtp.send_message(message)
+            send_email(job.recipient, payload, job_id)
         with DB.begin() as db:
             job = db.get(EmailJob, job_id)
             job.status, job.encrypted_payload = "sent", ""
