@@ -19,8 +19,15 @@ $('#logout').onclick = () => act(async () => { await api('/api/logout', 'POST');
 async function load() {
   me = await api('/api/me'); owned = []; try { owned = await api('/api/numbers'); } catch(error) { notice(error.message); }
   $('#auth').hidden = true; $('#workspace').hidden = false; $('#logout').hidden = false; $('#admin-nav').hidden = !me.platform_admin;
-  $('#company').textContent = me.tenant.name; $('#review-status').textContent = me.tenant.status; $('#billing-status').textContent = me.tenant.billing_status; $('#number-count').textContent = owned.length;
-  $('#next-step').textContent = me.tenant.status !== 'approved' ? 'Complete your legal business profile. Our team will review it and guide your number registration.' : me.tenant.billing_status !== 'active' ? 'Choose your subscription, then search for an available number.' : owned.length ? 'Set up call forwarding and start managing your conversations.' : 'Search for your UK number and submit an activation request.';
+  const submitted = Boolean(me.tenant.legal_name && me.tenant.address);
+  const pendingReview = submitted && me.tenant.status === 'pending';
+  const approved = me.tenant.status === 'approved';
+  $('#profile-review').hidden = !(pendingReview || approved);
+  $('#profile-form').hidden = pendingReview || approved;
+  $('#profile-review-title').textContent = approved ? 'Your company is approved' : 'Thank you — your company details are with us';
+  $('#profile-review-message').textContent = approved ? 'Your business review is complete. You can continue with your service subscription and number setup.' : 'We’ve received your company details, and they’re awaiting review. You can check your progress here. If anything changes, you can update your details below.';
+  $('#company').textContent = me.tenant.name; $('#review-status').textContent = approved ? 'Approved' : pendingReview ? 'Awaiting review' : 'Details needed'; $('#billing-status').textContent = me.tenant.billing_status; $('#number-count').textContent = owned.length;
+  $('#next-step').textContent = me.tenant.status !== 'approved' ? (pendingReview ? 'Thank you for sending your company details. They’re awaiting review — you can check your progress in account settings.' : 'Complete your legal business profile. Our team will review it and guide your number registration.') : me.tenant.billing_status !== 'active' ? 'Choose your subscription, then search for an available number.' : owned.length ? 'Set up call forwarding and start managing your conversations.' : 'Search for your UK number and submit an activation request.';
   for (const key of ['legal_name', 'address', 'registration_number']) $('#profile-form').elements[key].value = me.tenant[key] || '';
   $('#account-verification').textContent = `Email: ${me.email_verified ? 'verified' : 'verification required'} · Authenticator: ${me.mfa_enabled ? 'enabled' : 'not enabled'}`;
   $('#setup-mfa').hidden = me.mfa_enabled;
@@ -35,7 +42,8 @@ async function load() {
   if (me.email_verified) { const usage = await api('/api/usage'); $('#usage-summary').textContent = `${usage.sms_segments}/${usage.sms_allowance} SMS segments · ${usage.voice_minutes}/${usage.voice_allowance} call minutes this month`; }
   try { await loadOrders(); } catch(error) { notice(error.message); } show(me.email_verified ? 'overview' : 'account');
 }
-$('#profile-form').onsubmit = e => { e.preventDefault(); act(async () => { await api('/api/profile', 'PUT', fields(e.target)); await load(); notice('Business details submitted for review.'); }); };
+$('#edit-profile').onclick = () => { $('#profile-review').hidden = true; $('#profile-form').hidden = false; $('#profile-form').elements.legal_name.focus(); };
+$('#profile-form').onsubmit = e => { e.preventDefault(); act(async () => { await api('/api/profile', 'PUT', fields(e.target)); await load(); show('account'); notice('Thank you — we’ve received your company details for review.'); }); };
 $('#search-form').onsubmit = e => { e.preventDefault(); act(async () => {
   const results = await api('/api/numbers/search?' + new URLSearchParams(fields(e.target))); $('#search-results').replaceChildren();
   for (const n of results) { const card = element('article'); card.append(element('h2', n.phone), element('p', [n.voice && 'Voice', n.sms && 'SMS'].filter(Boolean).join(' · ') || 'No advertised capabilities'), button('Request activation', async () => { await api('/api/orders', 'POST', {phone:n.phone,type:n.type,request_key:crypto.randomUUID()}); await loadOrders(); notice('Activation requested. Follow its status below.'); })); $('#search-results').append(card); }
