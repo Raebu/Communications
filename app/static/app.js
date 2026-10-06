@@ -60,6 +60,19 @@ function renderNumbers() {
   if (!owned.length) $('#owned-numbers').append(element('p', 'Your activated numbers will appear here.'));
 }
 async function loadOrders() { const orders = await api('/api/orders'); $('#orders').replaceChildren(); for (const o of orders) { const row = element('article', undefined, 'owned'); row.append(element('h3', o.phone), element('p', `${o.status}${o.error ? ' · ' + o.error : ''}`)); $('#orders').append(row); } }
+const planDescriptions = {
+  business: 'Business Number: a UK number with call forwarding. Choose Connect if you also need to send business SMS.',
+  connect: 'Connect: a UK number, call forwarding, business SMS and a threaded inbox. Monthly usage allowances apply.',
+  ai: 'AI Receptionist: Connect with AI call handling and business knowledge. Booking and email actions need connected integrations. Activation is being prepared, so this plan cannot be purchased yet.'
+};
+function updatePlanDescription() {
+  const plan = $('#billing-form').elements.plan.value;
+  $('#plan-description').textContent = planDescriptions[plan];
+  $('#checkout-button').disabled = plan === 'ai';
+  $('#checkout-button').textContent = plan === 'ai' ? 'AI activation pending' : 'Continue to secure checkout';
+}
+$('#billing-form').elements.plan.onchange = updatePlanDescription;
+updatePlanDescription();
 $('#billing-form').onsubmit = e => { e.preventDefault(); act(async () => { const value = await api('/api/billing/checkout', 'POST', fields(e.target)); location.assign(value.url); }); };
 $('#billing-portal').onclick = () => act(async () => { const value = await api('/api/billing/portal', 'POST'); location.assign(value.url); });
 async function loadThreads() {
