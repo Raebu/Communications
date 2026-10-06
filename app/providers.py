@@ -1,16 +1,23 @@
+import logging
+
 from fastapi import HTTPException
 from twilio.rest import Client
 from .config import settings
 from .security import decrypt, encrypt
 
 
+logger = logging.getLogger(__name__)
+
+
 def parent_client():
     if settings.twilio_sid and settings.twilio_api_key and settings.twilio_api_secret:
         return Client(settings.twilio_api_key, settings.twilio_api_secret, account_sid=settings.twilio_sid, timeout=15)
     if settings.environment == 'production':
-        raise HTTPException(503, 'Configure a Twilio Main API key for account provisioning')
+        logger.error('Configure a Twilio Main API key for account provisioning')
+        raise HTTPException(503, 'Number activation is temporarily unavailable. Please try again shortly.')
     if not settings.twilio_sid or not settings.twilio_token:
-        raise HTTPException(503, 'Twilio is not configured')
+        logger.error('Twilio account provisioning is not configured')
+        raise HTTPException(503, 'Number activation is temporarily unavailable. Please try again shortly.')
     return Client(settings.twilio_sid, settings.twilio_token, timeout=15)
 
 
