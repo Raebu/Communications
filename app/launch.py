@@ -35,7 +35,7 @@ def report():
         "director_identity_configured": bool(settings.identity_key),
         "automated_telephone_review_enabled": settings.verification_auto_twilio,
         "smtp_configured": bool(settings.smtp_host and settings.email_from),
-        "business_identity_configured": bool(settings.legal_business_name and settings.legal_business_address and settings.support_email),
+        "business_identity_configured": bool(settings.legal_business_name and settings.legal_business_address and settings.legal_business_number and settings.support_email),
         "published_terms_configured": bool(
             settings.terms_version and settings.terms_url.startswith("https://") and settings.privacy_url.startswith("https://")
         ),
