@@ -23,6 +23,14 @@ async function load() {
   $('#next-step').textContent = me.tenant.status !== 'approved' ? 'Complete your legal business profile. Our team will review it and guide your number registration.' : me.tenant.billing_status !== 'active' ? 'Choose your subscription, then search for an available number.' : owned.length ? 'Set up call forwarding and start managing your conversations.' : 'Search for your UK number and submit an activation request.';
   for (const key of ['legal_name', 'address', 'registration_number']) $('#profile-form').elements[key].value = me.tenant[key] || '';
   $('#account-verification').textContent = `Email: ${me.email_verified ? 'verified' : 'verification required'} · Authenticator: ${me.mfa_enabled ? 'enabled' : 'not enabled'}`;
+  $('#setup-mfa').hidden = me.mfa_enabled;
+  $('#resend-verification').hidden = me.email_verified;
+  if (me.mfa_enabled) {
+    $('#mfa-enrolment').hidden = true;
+    $('#mfa-secret').textContent = '';
+    $('#mfa-qr').replaceChildren();
+    $('#mfa-form').reset();
+  }
   renderNumbers();
   if (me.email_verified) { const usage = await api('/api/usage'); $('#usage-summary').textContent = `${usage.sms_segments}/${usage.sms_allowance} SMS segments · ${usage.voice_minutes}/${usage.voice_allowance} call minutes this month`; }
   try { await loadOrders(); } catch(error) { notice(error.message); } show(me.email_verified ? 'overview' : 'account');
