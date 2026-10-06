@@ -803,6 +803,7 @@ def service_info():
     return {
         "legal_name": settings.legal_business_name,
         "address": settings.legal_business_address,
+        "company_number": settings.legal_business_number,
         "support_email": settings.support_email,
         "billing_email": settings.billing_email,
         "terms_url": settings.terms_url,
@@ -838,6 +839,16 @@ async def relay_fallback(request: Request):
             remaining = 0
         xml = fallback_xml(call, remaining)
     return Response(xml, media_type="application/xml")
+
+
+@app.get("/terms")
+def terms():
+    return FileResponse("app/static/terms.html")
+
+
+@app.get("/privacy")
+def privacy():
+    return FileResponse("app/static/privacy.html")
 
 
 @app.get("/payment-status")
