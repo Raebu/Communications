@@ -62,9 +62,9 @@ function renderNumbers() {
 }
 async function loadOrders() { const orders = await api('/api/orders'); $('#orders').replaceChildren(); for (const o of orders) { const row = element('article', undefined, 'owned'); row.append(element('h3', o.phone), element('p', `${o.status}${o.error ? ' · ' + o.error : ''}`)); $('#orders').append(row); } }
 const planDescriptions = {
-  business: 'Business Number: a UK number with call forwarding. Choose Connect if you also need to send business SMS.',
-  connect: 'Connect: a UK number, call forwarding, business SMS and a threaded inbox. Monthly usage allowances apply.',
-  ai: 'AI Receptionist: Connect with AI call handling and business knowledge. Booking and email actions need connected integrations. Activation is being prepared, so this plan cannot be purchased yet.'
+  business: 'Business Number — £7.99 per month: a UK number with call forwarding. Choose Connect if you also need to send business SMS.',
+  connect: 'Connect — £14.99 per month: a UK number, call forwarding, 50 outgoing SMS segments per month and a threaded inbox. Monthly usage allowances apply.',
+  ai: 'AI Receptionist: Starter £26.99/month with 75 AI minutes, Business £47.99/month with 150 AI minutes, or Growth £69.99/month with 225 AI minutes. Each includes one UK number, AI call handling and business knowledge. Booking and email actions need connected integrations. Activation is being prepared, so this plan cannot be purchased yet.'
 };
 function updatePlanDescription() {
   const plan = $('#billing-form').elements.plan.value;
