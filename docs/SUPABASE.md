@@ -1,6 +1,6 @@
 # Supabase deployment preparation
 
-Use a **new dedicated project**, standard PostgreSQL, in London (`eu-west-2`). The connected organisation is The Raeburn Group. Organisation selection and the provider's cost confirmation must be completed before project creation. No Communications project has been created or migrated yet.
+The dedicated **Raeburn Connect** project `yptzmjcevwseddpdwdvb` is active in London (`eu-west-2`). The private `communications` schema is owned by the login `communications_app`; migrations through `0014` are applied. All 34 application tables have RLS enabled, and SQL privilege checks show no table SELECT grants to `anon` or `authenticated`. Runtime connectivity and Data API exposure still need verification.
 
 ## Connection and isolation
 
@@ -33,8 +33,8 @@ For private-schema defense in depth, enable RLS on the application's tables afte
 
 Select a production backup plan and prove a restore into an isolated environment. `deployment/backup.sh` targets the local Compose database and must **not** be used for this stack. Supabase backups and any separately configured encrypted logical exports must have an explicit retention and off-site recovery policy. Exported schema data alone does not preserve encryption keys needed to decrypt application content.
 
-## Current account evidence — 3 October 2026
+## Current account evidence — 6 October 2026
 
-The Supabase connector lists The Raeburn Group organisation, with no dedicated Communications project. Stripe's Live connection lists The Raeburn Group of Companies (`acct_1SC2AzDG7MuGUtai`); this is account access, not proof that the application has its restricted key, webhook or subscription prices configured. Twilio onboarding and protected runtime credentials still require activation. Vercel remains optional for a separate marketing site.
+Supabase project and schema provisioning are verified. The dedicated DigitalOcean London server is active at `178.128.170.162`, but deployment access is blocked by this execution environment's network route. See [SERVER_HANDOFF.md](SERVER_HANDOFF.md). Stripe live account access does not supply the application's restricted key, webhook or subscription prices. Twilio and protected runtime credentials still require activation.
 
 References: [database connections](https://supabase.com/docs/guides/database/connecting-to-postgres), [Data API security](https://supabase.com/docs/guides/api/securing-your-api), [backups](https://supabase.com/docs/guides/platform/backups).
