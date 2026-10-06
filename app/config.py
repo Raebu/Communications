@@ -31,6 +31,7 @@ class Settings:
     voice_monthly_minutes: int = int(os.getenv("VOICE_MONTHLY_MINUTES", "30"))
     legal_business_name: str = os.getenv("LEGAL_BUSINESS_NAME", "")
     legal_business_address: str = os.getenv("LEGAL_BUSINESS_ADDRESS", "")
+    legal_business_number: str = os.getenv("LEGAL_BUSINESS_NUMBER", "")
     support_email: str = os.getenv("SUPPORT_EMAIL", "")
     terms_url: str = os.getenv("TERMS_URL", "")
     privacy_url: str = os.getenv("PRIVACY_URL", "")
@@ -87,6 +88,7 @@ class Settings:
                     self.connect_price,
                     self.legal_business_name,
                     self.legal_business_address,
+                    self.legal_business_number,
                     self.support_email,
                     self.terms_version,
                     self.terms_url,
