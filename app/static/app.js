@@ -70,8 +70,31 @@ setInterval(()=>{if(me&&!$('#inbox').hidden)act(async()=>{await loadThreads();aw
 
 $('#forgot-password').onclick = () => act(async () => { const email = $('#auth-form').elements.email.value; if (!email) throw Error('Enter your account email first.'); await api('/api/security/request/reset', 'POST', {email}); notice('If this account is eligible, a recovery email will arrive shortly.'); });
 $('#resend-verification').onclick = () => act(async () => { await api('/api/security/request/verify','POST',{email:me.email}); notice('Verification email requested.'); });
-$('#setup-mfa').onclick = () => act(async () => { const value=await api('/api/security/mfa/setup','POST'); $('#mfa-secret').textContent=value.secret; $('#mfa-enrolment').hidden=false; });
-$('#mfa-form').onsubmit = e => { e.preventDefault(); act(async()=>{await api('/api/security/mfa/confirm','POST',fields(e.target)); $('#mfa-enrolment').hidden=true; $('#mfa-secret').textContent=''; location.assign('/?mfa=enabled');}); };
+function renderMfaQr(modules) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${modules.length} ${modules.length}`);
+  svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label', 'Scan this QR code with your authenticator app');
+  svg.setAttribute('class', 'mfa-qr');
+  const background = document.createElementNS(ns, 'rect');
+  background.setAttribute('width', '100%'); background.setAttribute('height', '100%'); background.setAttribute('fill', 'white');
+  const path = document.createElementNS(ns, 'path');
+  let squares = '';
+  modules.forEach((row, y) => row.forEach((dark, x) => { if (dark) squares += `M${x},${y}h1v1h-1z`; }));
+  path.setAttribute('d', squares); path.setAttribute('fill', 'black');
+  svg.append(background, path);
+  $('#mfa-qr').replaceChildren(svg);
+}
+$('#setup-mfa').onclick = () => act(async () => {
+  const button = $('#setup-mfa'); button.disabled = true;
+  try {
+    $('#mfa-qr').replaceChildren(); $('#mfa-secret').textContent=''; $('#mfa-enrolment').hidden=true;
+    const value = await api('/api/security/mfa/setup', 'POST');
+    renderMfaQr(value.qr_modules); $('#mfa-secret').textContent=value.secret; $('#mfa-enrolment').hidden=false;
+  } finally { button.disabled = false; }
+});
+$('#mfa-form').onsubmit = e => { e.preventDefault(); act(async()=>{await api('/api/security/mfa/confirm','POST',fields(e.target)); $('#mfa-enrolment').hidden=true; $('#mfa-secret').textContent=''; $('#mfa-qr').replaceChildren(); location.assign('/?mfa=enabled');}); };
 const actionParams = new URLSearchParams(location.search);
 const action = actionParams.get('action');
 const actionToken = actionParams.get('token');

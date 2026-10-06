@@ -55,6 +55,15 @@ def test_mfa_enrollment_and_login_replay():
     import time
     c,t=customer()
     start=c.post('/api/security/mfa/setup',headers=HEADERS)
+    assert start.status_code == 200
+    assert start.headers['cache-control'] == 'no-store'
+    modules = start.json()['qr_modules']
+    assert len(modules) >= 29 and all(len(row) == len(modules) for row in modules)
+    assert all(type(cell) is bool for row in modules for cell in row)
+    # A four-module white quiet zone is needed for reliable scanning.
+    assert all(not any(row) for row in modules[:4] + modules[-4:])
+    assert all(not any(row[:4] + row[-4:]) for row in modules)
+    assert start.json()['secret'] in start.json()['uri']
     code=totp_code(start.json()['secret'],int(time.time()//30))
     assert c.post('/api/security/mfa/confirm',json={'code':code},headers=HEADERS).status_code==200
     c.post('/api/logout',headers=HEADERS)

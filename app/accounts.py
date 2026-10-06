@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import secrets
+import qrcode
 from datetime import timedelta
 from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -78,7 +79,10 @@ def mfa_setup(user=Depends(current_user)):
         current.mfa_secret = encrypt({'secret': secret})
         current.mfa_started_at = now()
         uri = 'otpauth://totp/Raeburn%20Communications:' + quote(current.email, safe='') + '?secret=' + secret + '&issuer=Raeburn%20Communications'
-        return {'secret': secret, 'uri': uri}
+        qr = qrcode.QRCode(border=4, error_correction=qrcode.constants.ERROR_CORRECT_M)
+        qr.add_data(uri)
+        qr.make(fit=True)
+        return {'secret': secret, 'uri': uri, 'qr_modules': qr.get_matrix()}
 
 
 class MFACode(BaseModel):
