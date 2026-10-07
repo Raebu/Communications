@@ -136,8 +136,11 @@ def test_verification_email_events_are_one_time_per_attempt(configured):
     with DB.begin() as db:
         proof = db.get(CompanyVerification, tid)
         user = db.get(User, proof.user_id)
-        # Start already queued the first two allowed events.
-        jobs = db.scalars(select(EmailJob)).all()
+        # Start already queued the first two allowed company-verification events.
+        jobs = [
+            job for job in db.scalars(select(EmailJob)).all()
+            if job.encrypted_payload and decrypt(job.encrypted_payload).get("category") == "company_verification"
+        ]
         assert len(jobs) == 2
         assert not cv.verification_event_mail(db, proof, "business_email", proof.mailbox, "Duplicate", "Body")
         assert not cv.verification_event_mail(db, proof, "verification_started", user.email, "Duplicate", "Body")
@@ -146,7 +149,11 @@ def test_verification_email_events_are_one_time_per_attempt(configured):
         assert cv.verification_event_mail(db, proof, "director_verified", user.email, "Director verified", "Body")
         assert not cv.verification_event_mail(db, proof, "director_verified", user.email, "Duplicate", "Body")
         db.flush()
-        assert len(db.scalars(select(EmailJob)).all()) == 4
+        jobs = [
+            job for job in db.scalars(select(EmailJob)).all()
+            if job.encrypted_payload and decrypt(job.encrypted_payload).get("category") == "company_verification"
+        ]
+        assert len(jobs) == 4
 
 
 def test_mailbox_and_dns_alone_never_prove_authority(configured):
