@@ -387,6 +387,7 @@ class IntelligenceProfile(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), primary_key=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     analyse_voicemail: Mapped[bool] = mapped_column(Boolean, default=False)
+    analyse_calls: Mapped[bool] = mapped_column(Boolean, default=False)
     analyse_messages: Mapped[bool] = mapped_column(Boolean, default=False)
     retention_days: Mapped[int] = mapped_column(Integer, default=90)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
