@@ -228,6 +228,14 @@ function addCallRouteRow(value = {}) {
   name.value = value.label || '';
   nameLabel.append(name);
 
+  const descriptionLabel = element('label', 'What callers might say');
+  const description = element('input');
+  description.name = 'route_description';
+  description.maxLength = 240;
+  description.placeholder = 'new enquiry, quote, pricing, buy something';
+  description.value = value.description || '';
+  descriptionLabel.append(description);
+
   const actionLabel = element('label', 'What happens');
   const action = element('select');
   action.name = 'route_action';
@@ -244,7 +252,7 @@ function addCallRouteRow(value = {}) {
     action.append(option);
   }
   actionLabel.append(action);
-  top.append(digitLabel, nameLabel, actionLabel);
+  top.append(digitLabel, nameLabel, descriptionLabel, actionLabel);
 
   const dialSettings = element('div', undefined, 'inline route-dial-settings');
   const phoneLabel = element('label', 'Phones or mobiles');
@@ -284,16 +292,76 @@ function addCallRouteRow(value = {}) {
   container.append(row);
 }
 
-async function loadCallRouting() {
-  const numberId = $('#call-routing-number').value;
-  if (!numberId) return;
-  const config = await api('/api/numbers/' + numberId + '/call-routing');
+function routingFormConfig() {
+  const form = $('#call-routing-form');
+  const rows = [...$('#call-route-options').querySelectorAll('.call-route-row')];
+  const options = rows.map(row => {
+    const action = row.querySelector('[name="route_action"]').value;
+    const destinations = row.querySelector('[name="route_destinations"]').value
+      .split(',')
+      .map(value => value.trim())
+      .filter(Boolean);
+    return {
+      digit: row.querySelector('[name="route_digit"]').value,
+      label: row.querySelector('[name="route_label"]').value.trim(),
+      description: row.querySelector('[name="route_description"]').value.trim(),
+      action,
+      destination: destinations[0] || '',
+      destinations: action === 'dial' ? destinations : [],
+      strategy: row.querySelector('[name="route_strategy"]').value,
+    };
+  }).filter(item => item.label);
+
+  const neverMiss = [];
+  for (let i = 1; i <= 4; i++) {
+    const value = form.elements['never_miss_' + i].value;
+    if (value && !neverMiss.includes(value)) neverMiss.push(value);
+  }
+  const weekdays = form.elements.hours_weekdays.value
+    .split(',')
+    .map(value => Number(value.trim()))
+    .filter(value => Number.isInteger(value));
+  const holidays = form.elements.hours_holidays.value
+    .split(/[\n,]+/)
+    .map(value => value.trim())
+    .filter(Boolean);
+
+  return {
+    enabled: form.elements.enabled.checked,
+    greeting: form.elements.greeting.value,
+    fallback: form.elements.fallback.value.trim(),
+    ring_seconds: Number(form.elements.ring_seconds.value),
+    options,
+    business_hours: {
+      enabled: form.elements.hours_enabled.checked,
+      timezone: form.elements.hours_timezone.value.trim(),
+      weekdays,
+      opens: form.elements.hours_opens.value,
+      closes: form.elements.hours_closes.value,
+      holidays,
+      after_hours: form.elements.after_hours.value,
+    },
+    emergency_mode: form.elements.emergency_mode.value,
+    never_miss: neverMiss,
+    vip_destination: form.elements.vip_destination.value.trim(),
+    whisper: form.elements.whisper.checked,
+    intent_first: form.elements.intent_first.checked,
+    intent_prompt: form.elements.intent_prompt.value,
+    voicemail_greeting: form.elements.voicemail_greeting.value,
+    transcribe_voicemail: form.elements.transcribe_voicemail.checked,
+    callback_message: form.elements.callback_message.value,
+  };
+}
+
+function applyRoutingConfig(config) {
   const form = $('#call-routing-form');
   form.elements.enabled.checked = Boolean(config.enabled);
   form.elements.greeting.value = config.greeting || '';
   form.elements.fallback.value = config.fallback || '';
   form.elements.ring_seconds.value = String(config.ring_seconds || 20);
   form.elements.whisper.checked = config.whisper !== false;
+  form.elements.intent_first.checked = Boolean(config.intent_first);
+  form.elements.intent_prompt.value = config.intent_prompt || 'Tell me briefly what you are calling about, or use the keypad.';
   form.elements.vip_destination.value = config.vip_destination || '';
   form.elements.emergency_mode.value = config.emergency_mode || 'normal';
   form.elements.voicemail_greeting.value = config.voicemail_greeting || '';
@@ -315,10 +383,16 @@ async function loadCallRouting() {
   $('#call-route-options').replaceChildren();
   for (const option of (config.options || [])) addCallRouteRow(option);
   if (!(config.options || []).length) {
-    addCallRouteRow({digit:'1', label:'Sales', action:'dial', destinations:[]});
-    addCallRouteRow({digit:'2', label:'Accounts', action:'dial', destinations:[]});
-    addCallRouteRow({digit:'0', label:'Operator', action:'dial', destinations:[]});
+    addCallRouteRow({digit:'1', label:'Sales', description:'new enquiry, pricing, quote', action:'dial', destinations:[]});
+    addCallRouteRow({digit:'2', label:'Accounts', description:'invoice, payment, accounts', action:'dial', destinations:[]});
+    addCallRouteRow({digit:'0', label:'Operator', description:'person, human, operator', action:'dial', destinations:[]});
   }
+}
+
+async function loadCallRouting() {
+  const numberId = $('#call-routing-number').value;
+  if (!numberId) return;
+  applyRoutingConfig(await api('/api/numbers/' + numberId + '/call-routing'));
 }
 
 $('#call-routing-number').onchange = () => act(loadCallRouting);
@@ -326,67 +400,46 @@ $('#add-call-route').onclick = () => addCallRouteRow();
 $('#call-routing-form').onsubmit = e => {
   e.preventDefault();
   act(async () => {
-    const form = e.target;
-    const rows = [...$('#call-route-options').querySelectorAll('.call-route-row')];
-    const options = rows.map(row => {
-      const action = row.querySelector('[name="route_action"]').value;
-      const destinations = row.querySelector('[name="route_destinations"]').value
-        .split(',')
-        .map(value => value.trim())
-        .filter(Boolean);
-      return {
-        digit: row.querySelector('[name="route_digit"]').value,
-        label: row.querySelector('[name="route_label"]').value.trim(),
-        action,
-        destination: destinations[0] || '',
-        destinations: action === 'dial' ? destinations : [],
-        strategy: row.querySelector('[name="route_strategy"]').value,
-      };
-    }).filter(item => item.label);
-
-    const neverMiss = [];
-    for (let i = 1; i <= 4; i++) {
-      const value = form.elements['never_miss_' + i].value;
-      if (value && !neverMiss.includes(value)) neverMiss.push(value);
-    }
-    const weekdays = form.elements.hours_weekdays.value
-      .split(',')
-      .map(value => Number(value.trim()))
-      .filter(value => Number.isInteger(value));
-    const holidays = form.elements.hours_holidays.value
-      .split(/[\n,]+/)
-      .map(value => value.trim())
-      .filter(Boolean);
-
-    await api('/api/numbers/' + $('#call-routing-number').value + '/call-routing', 'PUT', {
-      enabled: form.elements.enabled.checked,
-      greeting: form.elements.greeting.value,
-      fallback: form.elements.fallback.value.trim(),
-      ring_seconds: Number(form.elements.ring_seconds.value),
-      options,
-      business_hours: {
-        enabled: form.elements.hours_enabled.checked,
-        timezone: form.elements.hours_timezone.value.trim(),
-        weekdays,
-        opens: form.elements.hours_opens.value,
-        closes: form.elements.hours_closes.value,
-        holidays,
-        after_hours: form.elements.after_hours.value,
-      },
-      emergency_mode: form.elements.emergency_mode.value,
-      never_miss: neverMiss,
-      vip_destination: form.elements.vip_destination.value.trim(),
-      whisper: form.elements.whisper.checked,
-      voicemail_greeting: form.elements.voicemail_greeting.value,
-      transcribe_voicemail: form.elements.transcribe_voicemail.checked,
-      callback_message: form.elements.callback_message.value,
-    });
-    notice(form.elements.enabled.checked
+    const config = routingFormConfig();
+    await api('/api/numbers/' + $('#call-routing-number').value + '/call-routing', 'PUT', config);
+    notice(config.enabled
       ? 'Never-Miss routing saved. Your live number will follow this call flow.'
       : 'Advanced routing is off. Simple call forwarding will be used instead.');
     await loadCallRouting();
   });
 };
+
+$('#routing-generate-draft').onclick = () => act(async () => {
+  const numberId = $('#call-routing-number').value;
+  const instruction = $('#routing-autopilot-instruction').value.trim();
+  if (!instruction) throw Error('Describe the routing experience you want first.');
+  const result = await api('/api/routing-autopilot/numbers/' + numberId + '/draft', 'POST', {instruction});
+  applyRoutingConfig(result.draft);
+  notice('Routing draft generated. Review and simulate it before saving; live calls have not changed.');
+});
+
+$('#routing-simulate').onclick = () => act(async () => {
+  const localTime = $('#routing-sim-time').value;
+  const result = await api('/api/routing-autopilot/simulate', 'POST', {
+    config: routingFormConfig(),
+    at: localTime || null,
+    vip: $('#routing-sim-vip').checked,
+    digit: $('#routing-sim-digit').value.trim(),
+    speech: $('#routing-sim-speech').value.trim(),
+    selected_destination_answers: $('#routing-sim-answer').checked,
+    fallback_answers: $('#routing-sim-fallback-answer').checked,
+  });
+  const preview = $('#routing-flow-preview');
+  preview.replaceChildren();
+  for (const [index, step] of result.steps.entries()) {
+    const item = element('article', undefined, 'owned');
+    item.append(element('strong', String(index + 1) + '. ' + step.label));
+    preview.append(item);
+  }
+  preview.append(element('p', result.ends_safely
+    ? 'Simulation complete — this scenario ends in a handled path.'
+    : 'This scenario still reaches an unavailable message. Add another Never-Miss step.'));
+});
 
 async function loadOrders() {
   const orders = await api('/api/orders');
