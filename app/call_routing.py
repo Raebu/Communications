@@ -256,10 +256,16 @@ def customer_destination(config, brief):
                 return item.get("destination", "")
     if brief.get("open_promises", 0) and policy.get("open_promise_destination"):
         return policy["open_promise_destination"]
-    if int(brief.get("risk_score") or 0) >= int(policy.get("risk_threshold") or 70):
-        return policy.get("risk_destination", "")
-    if int(brief.get("revenue_signal") or 0) >= int(policy.get("revenue_threshold") or 100000):
-        return policy.get("revenue_destination", "")
+    if (
+        int(brief.get("risk_score") or 0) >= int(policy.get("risk_threshold") or 70)
+        and policy.get("risk_destination")
+    ):
+        return policy["risk_destination"]
+    if (
+        int(brief.get("revenue_signal") or 0) >= int(policy.get("revenue_threshold") or 100000)
+        and policy.get("revenue_destination")
+    ):
+        return policy["revenue_destination"]
     return policy.get("known_customer_destination", "")
 
 
