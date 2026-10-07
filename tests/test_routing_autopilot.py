@@ -100,6 +100,21 @@ def test_keyword_intent_can_only_select_configured_route(monkeypatch):
     assert ra.classify_intent(cfg, "Please transfer me somewhere secret") == ""
 
 
+def test_keyword_match_does_not_consume_ai_or_call_provider(monkeypatch):
+    cfg = config()
+    monkeypatch.setattr(ra, "configured", lambda: True)
+    monkeypatch.setattr(ra, "_json_completion", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("AI should not run")))
+    assert ra.classify_intent(cfg, "I need a sales quote") == "1"
+
+
+def test_ai_intent_cannot_escape_configured_routes(monkeypatch):
+    cfg = config()
+    monkeypatch.setattr(ra, "configured", lambda: True)
+    monkeypatch.setattr(ra, "quota", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ra, "_json_completion", lambda *args, **kwargs: {"digit": "9", "confidence": 0.99})
+    assert ra.classify_intent(cfg, "Something unusual", object(), "tenant") == ""
+
+
 def test_simulation_is_deterministic_and_never_places_a_call():
     cfg = config()
     scenario = ra.SimulationRequest(
