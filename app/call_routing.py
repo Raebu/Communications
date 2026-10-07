@@ -103,6 +103,12 @@ class RoutingUpdate(BaseModel):
         min_length=10,
         max_length=300,
     )
+    missed_call_sms_enabled: bool = False
+    missed_call_sms_message: str = Field(
+        default="Sorry we missed your call. Reply to this message and we will get back to you.",
+        min_length=10,
+        max_length=320,
+    )
 
     @model_validator(mode="after")
     def validate_routes(self):
@@ -136,6 +142,8 @@ def _normalise(value):
     value.setdefault("voicemail_greeting", "Nobody is available right now. Your message will be recorded. Please leave it after the tone.")
     value.setdefault("transcribe_voicemail", False)
     value.setdefault("callback_message", "We have saved your callback request and the team will follow up.")
+    value.setdefault("missed_call_sms_enabled", False)
+    value.setdefault("missed_call_sms_message", "Sorry we missed your call. Reply to this message and we will get back to you.")
     value.setdefault("ring_seconds", 20)
     value.setdefault("fallback", "")
     value.setdefault("options", [])
@@ -155,9 +163,12 @@ def _config(row):
     return value
 
 
+def routing_settings_for(db, number):
+    return _config(db.get(CallRouting, number.id))
+
+
 def routing_for(db, number):
-    row = db.get(CallRouting, number.id)
-    value = _config(row)
+    value = routing_settings_for(db, number)
     return value if value and value.get("enabled") else None
 
 

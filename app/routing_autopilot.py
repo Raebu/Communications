@@ -123,6 +123,8 @@ def _default_current(db, number):
         "voicemail_greeting": "Nobody is available right now. Your message will be recorded. Please leave it after the tone.",
         "transcribe_voicemail": False,
         "callback_message": "We have saved your callback request and the team will follow up.",
+        "missed_call_sms_enabled": False,
+        "missed_call_sms_message": "Sorry we missed your call. Reply to this message and we will get back to you.",
     }
 
 
@@ -148,9 +150,10 @@ def draft(number_id: str, data: DraftRequest, user=Depends(current_user)):
         "emergency_mode:normal|closed|fallback|ai|callback|voicemail,"
         "never_miss:[fallback|ai|callback|voicemail],vip_destination:string,whisper:boolean,"
         "intent_first:boolean,intent_prompt:string,voicemail_greeting:string,"
-        "transcribe_voicemail:boolean,callback_message:string}. "
+        "transcribe_voicemail:boolean,callback_message:string,missed_call_sms_enabled:boolean,"
+        "missed_call_sms_message:string}. "
         "Never invent phone numbers. Keep any existing phone number unless the owner explicitly supplies a replacement. "
-        "Never activate recording/transcription unless explicitly requested. "
+        "Never activate recording/transcription or missed-call SMS unless explicitly requested. "
         "Prefer Never-Miss chains that end in callback or voicemail rather than a dead end."
     )
     result = _json_completion(

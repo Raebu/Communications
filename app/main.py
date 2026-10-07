@@ -17,6 +17,7 @@ from .channels import enabled as channel_enabled
 from .call_routing import (
     router as call_routing_router,
     routing_for,
+    routing_settings_for,
     menu_xml,
     dial_xml,
     dial_group_xml,
@@ -720,6 +721,94 @@ def _finish_call(call):
     call.status = "completed"
 
 
+def _queue_missed_call_sms(db, tenant_id, call, event):
+    tenant = db.scalar(select(Tenant).where(Tenant.id == tenant_id).with_for_update())
+    number = db.get(Number, call.number_id)
+    if not tenant or not number or not number.sms:
+        return None
+    route_settings = routing_settings_for(db, number) or {}
+    if not route_settings.get("missed_call_sms_enabled"):
+        return None
+    if tenant.status != "approved" or tenant.billing_status != "active" or tenant.plan == "business":
+        return None
+    detail = _call_detail(event)
+    peer = str(detail.get("from", ""))
+    if not peer.startswith("+44") or not peer[1:].isdigit() or len(peer) not in {12, 13}:
+        return None
+    if db.scalar(select(Suppression).where(Suppression.tenant_id == tenant_id, Suppression.peer == peer)):
+        return None
+
+    request_key = "recovery:missed-call:" + call.sid
+    existing = db.scalar(
+        select(Message).where(Message.tenant_id == tenant_id, Message.request_key == request_key)
+    )
+    if existing:
+        return existing
+
+    body = str(route_settings.get("missed_call_sms_message", "")).strip()
+    if not body:
+        return None
+    units = segment_count(body)
+    day = now().replace(hour=0, minute=0, second=0, microsecond=0)
+    daily = db.scalars(
+        select(Message).where(
+            Message.tenant_id == tenant_id,
+            Message.direction == "outbound",
+            Message.created_at >= day,
+        )
+    ).all()
+    monthly = db.scalars(
+        select(Message).where(
+            Message.tenant_id == tenant_id,
+            Message.direction == "outbound",
+            Message.created_at >= day.replace(day=1),
+        )
+    ).all()
+    daily_units = sum(message_units(message) for message in daily)
+    monthly_units = sum(message_units(message) for message in monthly)
+    if daily_units + units > 100 or monthly_units + units > settings.sms_monthly_segments:
+        db.add(
+            Audit(
+                tenant_id=tenant_id,
+                actor="system",
+                action="missed_call.sms_skipped",
+                detail="allowance",
+            )
+        )
+        return None
+
+    message = Message(
+        tenant_id=tenant_id,
+        number_id=number.id,
+        peer=peer,
+        direction="outbound",
+        body=body,
+        segment_units=units,
+        channel="sms",
+        request_key=request_key,
+    )
+    db.add(message)
+    db.flush()
+    record_event(
+        db,
+        tenant_id,
+        "call.missed_sms_queued",
+        "sms",
+        message.id,
+        event.customer_id if event else None,
+        {"call_sid": call.sid},
+    )
+    db.add(
+        Audit(
+            tenant_id=tenant_id,
+            actor="system",
+            action="missed_call.sms_queued",
+            detail=call.sid,
+        )
+    )
+    return message
+
+
 def _queue_call_recovery(db, tenant_id, call, kind, reason):
     if _recovery_exists(db, tenant_id, kind, call.sid):
         return
@@ -751,6 +840,8 @@ def _queue_call_recovery(db, tenant_id, call, kind, reason):
         event.customer_id if event else None,
         {"reason": reason},
     )
+    if kind == "missed_call":
+        _queue_missed_call_sms(db, tenant_id, call, event)
 
 
 def _whisper_url(call, route):
@@ -1126,58 +1217,7 @@ async def voice_status(request: Request):
             return Response("<Response/>", media_type="application/xml")
         dial_status = p.get("DialCallStatus", "")
         if dial_status in {"no-answer", "busy", "failed", "canceled"}:
-            existing_recoveries = db.scalars(
-                select(RecoveryJob).where(
-                    RecoveryJob.tenant_id == tenant_id,
-                    RecoveryJob.kind == "missed_call",
-                    RecoveryJob.status.in_(["queued", "attention"]),
-                )
-            ).all()
-            event = db.scalar(
-                select(CustomerEvent).where(
-                    CustomerEvent.tenant_id == tenant_id,
-                    CustomerEvent.source_id == call.sid,
-                    CustomerEvent.kind == "call.inbound",
-                ).order_by(CustomerEvent.occurred_at.desc()).limit(1)
-            )
-            duplicate = False
-            for recovery in existing_recoveries:
-                if not recovery.encrypted_payload:
-                    continue
-                try:
-                    duplicate = decrypt(recovery.encrypted_payload).get("call_sid") == call.sid
-                except Exception:
-                    duplicate = False
-                if duplicate:
-                    break
-            if not duplicate:
-                detail = decrypt(event.encrypted_payload) if event and event.encrypted_payload else {}
-                db.add(
-                    RecoveryJob(
-                        tenant_id=tenant_id,
-                        customer_id=event.customer_id if event else None,
-                        kind="missed_call",
-                        status="attention",
-                        due_at=now(),
-                        encrypted_payload=encrypt(
-                            {
-                                "call_sid": call.sid,
-                                "from": detail.get("from", ""),
-                                "to": detail.get("to", ""),
-                                "reason": dial_status,
-                            }
-                        ),
-                    )
-                )
-                record_event(
-                    db,
-                    tenant_id,
-                    "call.missed",
-                    "voice",
-                    call.sid,
-                    event.customer_id if event else None,
-                    {"reason": dial_status},
-                )
+            _queue_call_recovery(db, tenant_id, call, "missed_call", dial_status)
         try:
             seconds = int(p.get("CallDuration", p.get("DialCallDuration", "0")))
             if "CallDuration" not in p:

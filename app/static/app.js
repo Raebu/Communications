@@ -350,6 +350,8 @@ function routingFormConfig() {
     voicemail_greeting: form.elements.voicemail_greeting.value,
     transcribe_voicemail: form.elements.transcribe_voicemail.checked,
     callback_message: form.elements.callback_message.value,
+    missed_call_sms_enabled: form.elements.missed_call_sms_enabled.checked,
+    missed_call_sms_message: form.elements.missed_call_sms_message.value,
   };
 }
 
@@ -367,6 +369,8 @@ function applyRoutingConfig(config) {
   form.elements.voicemail_greeting.value = config.voicemail_greeting || '';
   form.elements.transcribe_voicemail.checked = Boolean(config.transcribe_voicemail);
   form.elements.callback_message.value = config.callback_message || '';
+  form.elements.missed_call_sms_enabled.checked = Boolean(config.missed_call_sms_enabled);
+  form.elements.missed_call_sms_message.value = config.missed_call_sms_message || 'Sorry we missed your call. Reply to this message and we will get back to you.';
 
   const hours = config.business_hours || {};
   form.elements.hours_enabled.checked = Boolean(hours.enabled);
