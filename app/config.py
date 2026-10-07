@@ -18,6 +18,7 @@ class Settings:
     ai_price: str = os.getenv("STRIPE_PRICE_AI", "")
     twilio_api_key: str = os.getenv("TWILIO_API_KEY", "")
     twilio_api_secret: str = os.getenv("TWILIO_API_SECRET", "")
+    twilio_transcription_configuration_id: str = os.getenv("TWILIO_TRANSCRIPTION_CONFIGURATION_ID", "")
     smtp_host: str = os.getenv("SMTP_HOST", "")
     smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
     smtp_user: str = os.getenv("SMTP_USER", "")
