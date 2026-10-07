@@ -245,6 +245,24 @@ def selected_option(config, digit):
     return None
 
 
+def customer_destination(config, brief):
+    policy = (config or {}).get("customer_routing") or {}
+    if not policy.get("enabled") or not brief.get("known"):
+        return ""
+    owner = str(brief.get("owner") or "").strip().casefold()
+    if owner:
+        for item in policy.get("owner_routes") or []:
+            if str(item.get("owner") or "").strip().casefold() == owner:
+                return item.get("destination", "")
+    if brief.get("open_promises", 0) and policy.get("open_promise_destination"):
+        return policy["open_promise_destination"]
+    if int(brief.get("risk_score") or 0) >= int(policy.get("risk_threshold") or 70):
+        return policy.get("risk_destination", "")
+    if int(brief.get("revenue_signal") or 0) >= int(policy.get("revenue_threshold") or 100000):
+        return policy.get("revenue_destination", "")
+    return policy.get("known_customer_destination", "")
+
+
 def ordered_members(db, tenant_id, option):
     members = list(_members(option))
     strategy = option.get("strategy", "simultaneous")
