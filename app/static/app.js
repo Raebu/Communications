@@ -228,7 +228,7 @@ async function loadCompanyVerification() {
     telephonePreflight.hidden = Boolean(value.telephone_authorized);
     telephoneStart.hidden = true;
     if (value.telephone_authorized && !telephoneComplete) {
-      $('#company-telephone-readiness').textContent = 'Telephone approval has started. Twilio is reviewing the regulatory bundle; this page will update automatically.';
+      $('#company-telephone-readiness').textContent = 'Telephone approval has started. We are reviewing the regulatory bundle; this page will update automatically.';
     } else if (!telephoneComplete) {
       $('#company-telephone-readiness').textContent = 'Before anything is submitted, Raeburn Connect can check Twilio’s current UK requirements against your verified company data without creating a regulatory bundle.';
     }
@@ -279,7 +279,7 @@ $('#company-telephone-start').onclick = () => act(async () => {
     $('#company-telephone-readiness').textContent =
       result.status === 'approved'
         ? 'Telephone approval is complete.'
-        : 'Telephone approval has started. Twilio is reviewing the regulatory bundle; this page will update automatically.';
+        : 'Telephone approval has started. We are reviewing the regulatory bundle; this page will update automatically.';
     await loadCompanyVerification();
     notice('Telephone approval started. Raeburn Connect will keep checking Twilio for the result.');
   } finally {
