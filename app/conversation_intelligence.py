@@ -257,6 +257,35 @@ def settings_put(data: IntelligenceSettings, user=Depends(current_user)):
     return {"saved": True}
 
 
+def intelligence_retention_one():
+    with DB.begin() as db:
+        job = db.scalar(
+            select(IntelligenceJob)
+            .where(
+                IntelligenceJob.status == "completed",
+                IntelligenceJob.completed_at.is_not(None),
+                IntelligenceJob.result != "",
+            )
+            .order_by(IntelligenceJob.completed_at)
+            .with_for_update(skip_locked=True)
+            .limit(1)
+        )
+        if not job:
+            return False
+        profile = db.get(IntelligenceProfile, job.tenant_id)
+        days = profile.retention_days if profile else 90
+        if job.completed_at.replace(tzinfo=timezone.utc) > now() - __import__("datetime").timedelta(days=days):
+            return False
+        job.result = ""
+        db.add(Audit(
+            tenant_id=job.tenant_id,
+            actor="system",
+            action="conversation_intelligence.retention_applied",
+            detail=job.id,
+        ))
+        return True
+
+
 def intelligence_one():
     with DB.begin() as db:
         job = db.scalar(
