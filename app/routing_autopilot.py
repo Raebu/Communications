@@ -1,5 +1,6 @@
 """Draft-first routing autopilot, intent classification and deterministic simulation."""
 import json
+import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -76,6 +77,23 @@ def _number(db, tenant_id, number_id):
     return number
 
 
+def _phone_set(config):
+    values = set()
+    for key in ("fallback", "vip_destination"):
+        value = (config or {}).get(key, "")
+        if value:
+            values.add(value)
+    for option in (config or {}).get("options", []):
+        if option.get("destination"):
+            values.add(option["destination"])
+        values.update(value for value in option.get("destinations", []) if value)
+    return values
+
+
+def _explicit_instruction_phones(instruction):
+    return set(re.findall(r"\+44\d{9,10}", instruction))
+
+
 def _default_current(db, number):
     row = db.get(CallRouting, number.id)
     value = _config(row)
@@ -146,6 +164,13 @@ def draft(number_id: str, data: DraftRequest, user=Depends(current_user)):
         validated = RoutingUpdate.model_validate(result)
     except Exception:
         raise HTTPException(422, "The generated routing draft did not pass safety validation. Nothing was changed.") from None
+    allowed_phones = _phone_set(current) | _explicit_instruction_phones(data.instruction)
+    introduced = _phone_set(validated.model_dump()) - allowed_phones
+    if introduced:
+        raise HTTPException(
+            422,
+            "The generated routing draft introduced a phone number you did not provide. Nothing was changed.",
+        )
     return {
         "draft": validated.model_dump(),
         "changed": validated.model_dump() != RoutingUpdate.model_validate(current).model_dump(),
