@@ -229,7 +229,9 @@ def run():
 
             worked = obligation_one() or worked
             from .conversation_intelligence import intelligence_one, intelligence_retention_one
+            from .call_recording import recording_retention_one
 
+            worked = recording_retention_one() or worked
             worked = intelligence_retention_one() or worked
             worked = intelligence_one() or worked
             from .outbound_hooks import webhook_one
