@@ -119,6 +119,35 @@ class Number(Base):
     forwarding: Mapped[str] = mapped_column(String(20), default="")
 
 
+class PortRequest(Base):
+    __tablename__ = "port_requests"
+    __table_args__ = (UniqueConstraint("tenant_id", "phone"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    phone: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(30), default="review")
+    provider_reference: Mapped[str] = mapped_column(String(80), default="")
+    encrypted_payload: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class OutboundCallRequest(Base):
+    __tablename__ = "outbound_call_requests"
+    __table_args__ = (UniqueConstraint("tenant_id", "request_key"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    number_id: Mapped[str] = mapped_column(ForeignKey("numbers.id"), index=True)
+    request_key: Mapped[str] = mapped_column(String(100))
+    destination: Mapped[str] = mapped_column(String(20))
+    agent_destination: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(30), default="queued")
+    provider_sid: Mapped[str] = mapped_column(String(40), default="")
+    error: Mapped[str] = mapped_column(String(80), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class CallRouting(Base):
     __tablename__ = "call_routing"
     number_id: Mapped[str] = mapped_column(ForeignKey("numbers.id"), primary_key=True)
