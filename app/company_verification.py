@@ -490,18 +490,20 @@ def identity_mobile(token: str):
     safe_token = re.sub(r'[^A-Za-z0-9_-]', '', token)
     return HTMLResponse(f'''<!doctype html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Continue director verification · Raeburn Connect</title><link rel="stylesheet" href="/static/style.css"></head>
-<body class="mobile-handoff"><main class="mobile-handoff-main"><section class="feature mobile-handoff-card">
+<title>Continue director verification · Raeburn Connect</title><link rel="stylesheet" href="/static/style.css">
+<script src="https://js.stripe.com/v3/"></script><script defer src="/static/identity-mobile.js"></script></head>
+<body class="mobile-handoff"><main class="mobile-handoff-main"><section class="feature mobile-handoff-card" data-identity-token="{safe_token}">
 <p class="eyebrow">SECURE DIRECTOR VERIFICATION</p><h1>Continue on this phone.</h1>
-<p class="lead">Your company checks are already complete. Continue to Stripe to verify the current director using your identity document and selfie.</p>
-<form method="post" action="/api/company-verification/identity-mobile/{safe_token}/continue">
-<button type="submit">Continue secure identity check</button></form>
-<p class="muted">If your camera opened this page inside a preview, open it in Safari or Chrome before continuing. This handoff expires after 10 minutes and works once.</p>
+<p class="lead">Use Stripe's secure mobile verification window to photograph your identity document and complete the selfie check.</p>
+<p><strong>For document photos, use your phone's rear camera where Stripe offers it.</strong> If the hosted page previously selected the wrong camera, this modal flow uses Stripe's supported browser integration instead.</p>
+<button type="button" id="identity-modal-start">Start secure identity check</button>
+<p id="identity-mobile-status" class="muted" role="status" aria-live="polite"></p>
+<a id="identity-direct-fallback" class="identity-direct-fallback" hidden>Having camera trouble? Open Stripe directly in Safari/Chrome</a>
+<p class="muted">Open this page in Safari or Chrome rather than an embedded camera preview. The handoff expires after 10 minutes and works once. Raeburn Connect never receives your document or selfie images.</p>
 </section></main></body></html>''')
 
 
-@router.post('/identity-mobile/{token}/continue')
-def identity_mobile_continue(token: str):
+def mobile_identity_session(token):
     session_id, attempt, tenant_id = identity_handoff(token, consume=True)
     try:
         session = identity_client().v1.identity.verification_sessions.retrieve(session_id)
@@ -516,6 +518,25 @@ def identity_mobile_continue(token: str):
     parsed = urlsplit(session.url or '')
     if parsed.scheme != 'https' or parsed.hostname != 'verify.stripe.com':
         raise HTTPException(409, 'The director identity session is no longer available. Return to Raeburn Connect and retry.')
+    return session
+
+
+@router.post('/identity-mobile/{token}/modal')
+def identity_mobile_modal(token: str):
+    session = mobile_identity_session(token)
+    client_secret = getattr(session, 'client_secret', '') or ''
+    publishable_key = settings.stripe_publishable_key
+    if publishable_key and not publishable_key.startswith(('pk_live_', 'pk_test_')):
+        raise HTTPException(503, 'Stripe Identity browser configuration is invalid.')
+    if not client_secret or not publishable_key:
+        return {'mode': 'redirect', 'redirect_url': session.url}
+    return {'mode': 'modal', 'client_secret': client_secret,
+            'publishable_key': publishable_key, 'redirect_url': session.url}
+
+
+@router.post('/identity-mobile/{token}/continue')
+def identity_mobile_continue(token: str):
+    session = mobile_identity_session(token)
     return RedirectResponse(session.url, status_code=303)
 
 
