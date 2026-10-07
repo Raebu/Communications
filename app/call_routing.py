@@ -163,9 +163,12 @@ def _config(row):
     return value
 
 
+def routing_settings_for(db, number):
+    return _config(db.get(CallRouting, number.id))
+
+
 def routing_for(db, number):
-    row = db.get(CallRouting, number.id)
-    value = _config(row)
+    value = routing_settings_for(db, number)
     return value if value and value.get("enabled") else None
 
 
