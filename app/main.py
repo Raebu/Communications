@@ -841,12 +841,12 @@ async def relay_fallback(request: Request):
     return Response(xml, media_type="application/xml")
 
 
-@app.get("/terms")
+@app.api_route("/terms", methods=["GET", "HEAD"])
 def terms():
     return FileResponse("app/static/terms.html")
 
 
-@app.get("/privacy")
+@app.api_route("/privacy", methods=["GET", "HEAD"])
 def privacy():
     return FileResponse("app/static/privacy.html")
 
