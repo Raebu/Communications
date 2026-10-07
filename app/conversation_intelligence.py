@@ -28,6 +28,7 @@ router = APIRouter(prefix="/api/conversation-intelligence")
 class IntelligenceSettings(BaseModel):
     enabled: bool = False
     analyse_voicemail: bool = False
+    analyse_calls: bool = False
     analyse_messages: bool = False
     retention_days: int = Field(default=90, ge=7, le=365)
 
@@ -42,6 +43,8 @@ def queue_event(db, event):
         return None
     allowed = (
         event.kind == "voicemail.transcribed" and profile.analyse_voicemail
+    ) or (
+        event.kind == "call.transcribed" and profile.analyse_calls
     ) or (
         event.kind == "message.inbound" and profile.analyse_messages
     )
@@ -58,7 +61,7 @@ def queue_event(db, event):
 
 def _source_text(event):
     payload = decrypt(event.encrypted_payload) if event.encrypted_payload else {}
-    if event.kind == "voicemail.transcribed":
+    if event.kind in {"voicemail.transcribed", "call.transcribed"}:
         return str(payload.get("transcript", "")).strip()
     if event.kind == "message.inbound":
         return str(payload.get("body") or payload.get("preview", "")).strip()
