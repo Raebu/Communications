@@ -1,13 +1,20 @@
 # Standalone production stack for Supabase or another managed PostgreSQL service.
 # Do not merge with compose.yaml: this stack deliberately has no local database.
+# The Supabase CA is mounted read-only into every service that opens a database
+# connection. Override SUPABASE_CA_CERT_PATH only when the authorised host stores
+# the certificate somewhere other than /opt/raeburn/certs/supabase-ca.crt.
 services:
   migrate:
     build: .
     env_file: .env
+    volumes:
+      - ${SUPABASE_CA_CERT_PATH:-/opt/raeburn/certs/supabase-ca.crt}:/run/certs/supabase-ca.crt:ro
     command: [python, -m, alembic, upgrade, head]
   api:
     build: .
     env_file: .env
+    volumes:
+      - ${SUPABASE_CA_CERT_PATH:-/opt/raeburn/certs/supabase-ca.crt}:/run/certs/supabase-ca.crt:ro
     restart: unless-stopped
     depends_on:
       migrate:
@@ -15,6 +22,8 @@ services:
   worker:
     build: .
     env_file: .env
+    volumes:
+      - ${SUPABASE_CA_CERT_PATH:-/opt/raeburn/certs/supabase-ca.crt}:/run/certs/supabase-ca.crt:ro
     command: [python, -m, app.worker]
     healthcheck:
       disable: true
