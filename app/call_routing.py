@@ -22,6 +22,7 @@ FALLBACK_ACTIONS = {"fallback", "ai", "callback", "voicemail"}
 class RouteOption(BaseModel):
     digit: str = Field(pattern=r"^[0-9]$")
     label: str = Field(min_length=1, max_length=60)
+    description: str = Field(default="", max_length=240)
     action: Literal["dial", "callback", "ai", "voicemail"] = "dial"
     destination: str = ""
     destinations: list[str] = Field(default_factory=list, max_length=8)
@@ -85,6 +86,12 @@ class RoutingUpdate(BaseModel):
     )
     vip_destination: str = Field(default="", pattern=r"^(?:\+44(?:[12]\d{9}|7[1-57-9]\d{8}))?$")
     whisper: bool = True
+    intent_first: bool = False
+    intent_prompt: str = Field(
+        default="Tell me briefly what you are calling about, or use the keypad.",
+        min_length=10,
+        max_length=300,
+    )
     voicemail_greeting: str = Field(
         default="Nobody is available right now. Your message will be recorded. Please leave it after the tone.",
         min_length=10,
@@ -124,6 +131,8 @@ def _normalise(value):
     value.setdefault("never_miss", ["fallback", "ai", "callback"])
     value.setdefault("vip_destination", "")
     value.setdefault("whisper", True)
+    value.setdefault("intent_first", False)
+    value.setdefault("intent_prompt", "Tell me briefly what you are calling about, or use the keypad.")
     value.setdefault("voicemail_greeting", "Nobody is available right now. Your message will be recorded. Please leave it after the tone.")
     value.setdefault("transcribe_voicemail", False)
     value.setdefault("callback_message", "We have saved your callback request and the team will follow up.")
@@ -131,6 +140,7 @@ def _normalise(value):
     value.setdefault("fallback", "")
     value.setdefault("options", [])
     for option in value["options"]:
+        option.setdefault("description", "")
         option.setdefault("action", "dial")
         option.setdefault("strategy", "simultaneous")
         option.setdefault("destinations", _members(option))
@@ -219,6 +229,8 @@ def get_call_routing(number_id: str, user=Depends(current_user)):
             "never_miss": ["fallback", "ai", "callback"],
             "vip_destination": "",
             "whisper": True,
+            "intent_first": False,
+            "intent_prompt": "Tell me briefly what you are calling about, or use the keypad.",
             "voicemail_greeting": "Nobody is available right now. Your message will be recorded. Please leave it after the tone.",
             "transcribe_voicemail": False,
             "callback_message": "We have saved your callback request and the team will follow up.",
@@ -259,9 +271,18 @@ def menu_xml(config, action_url, prefix=""):
         ("Press zero" if item["digit"] == "0" else "Press " + item["digit"]) + " for " + item["label"] + "."
         for item in sorted(config.get("options", []), key=lambda item: item["digit"])
     )
-    prompt = (prefix + " " if prefix else "") + config["greeting"].strip() + " " + menu
+    spoken = (
+        config.get("intent_prompt", "Tell me briefly what you are calling about, or use the keypad.") + " "
+        if config.get("intent_first") else ""
+    )
+    prompt = (prefix + " " if prefix else "") + config["greeting"].strip() + " " + spoken + menu
+    gather = (
+        '<Response><Gather input="dtmf speech" numDigits="1" timeout="6" speechTimeout="auto" actionOnEmptyResult="true" action="'
+        if config.get("intent_first")
+        else '<Response><Gather numDigits="1" timeout="6" actionOnEmptyResult="true" action="'
+    )
     return (
-        '<Response><Gather numDigits="1" timeout="6" actionOnEmptyResult="true" action="'
+        gather
         + escape(action_url, {'"': "&quot;"})
         + '" method="POST"><Say>'
         + escape(prompt)
