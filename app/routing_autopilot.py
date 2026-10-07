@@ -122,6 +122,10 @@ def _default_current(db, number):
         "intent_prompt": "Tell me briefly what you are calling about, or use the keypad.",
         "voicemail_greeting": "Nobody is available right now. Your message will be recorded. Please leave it after the tone.",
         "transcribe_voicemail": False,
+        "record_answered_calls": False,
+        "transcribe_answered_calls": False,
+        "recording_retention_days": 30,
+        "recording_announcement": "This call may be recorded for service and quality purposes.",
         "callback_message": "We have saved your callback request and the team will follow up.",
         "missed_call_sms_enabled": False,
         "missed_call_sms_message": "Sorry we missed your call. Reply to this message and we will get back to you.",
@@ -150,10 +154,12 @@ def draft(number_id: str, data: DraftRequest, user=Depends(current_user)):
         "emergency_mode:normal|closed|fallback|ai|callback|voicemail,"
         "never_miss:[fallback|ai|callback|voicemail],vip_destination:string,whisper:boolean,"
         "intent_first:boolean,intent_prompt:string,voicemail_greeting:string,"
-        "transcribe_voicemail:boolean,callback_message:string,missed_call_sms_enabled:boolean,"
+        "transcribe_voicemail:boolean,record_answered_calls:boolean,"
+        "transcribe_answered_calls:boolean,recording_retention_days:integer,"
+        "recording_announcement:string,callback_message:string,missed_call_sms_enabled:boolean,"
         "missed_call_sms_message:string}. "
         "Never invent phone numbers. Keep any existing phone number unless the owner explicitly supplies a replacement. "
-        "Never activate recording/transcription or missed-call SMS unless explicitly requested. "
+        "Never activate answered-call recording, answered-call transcription, voicemail transcription, or missed-call SMS unless explicitly requested. "
         "Prefer Never-Miss chains that end in callback or voicemail rather than a dead end."
     )
     result = _json_completion(
@@ -173,6 +179,25 @@ def draft(number_id: str, data: DraftRequest, user=Depends(current_user)):
         raise HTTPException(
             422,
             "The generated routing draft introduced a phone number you did not provide. Nothing was changed.",
+        )
+    instruction = data.instruction.lower()
+    if (
+        validated.record_answered_calls
+        and not current.get("record_answered_calls", False)
+        and not any(term in instruction for term in ("record", "recording"))
+    ):
+        raise HTTPException(
+            422,
+            "Answered-call recording can only be enabled when you explicitly request recording. Nothing was changed.",
+        )
+    if (
+        validated.transcribe_answered_calls
+        and not current.get("transcribe_answered_calls", False)
+        and not any(term in instruction for term in ("transcrib", "transcription"))
+    ):
+        raise HTTPException(
+            422,
+            "Answered-call transcription can only be enabled when you explicitly request transcription. Nothing was changed.",
         )
     return {
         "draft": validated.model_dump(),

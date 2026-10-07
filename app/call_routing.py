@@ -98,6 +98,14 @@ class RoutingUpdate(BaseModel):
         max_length=300,
     )
     transcribe_voicemail: bool = False
+    record_answered_calls: bool = False
+    transcribe_answered_calls: bool = False
+    recording_retention_days: int = Field(default=30, ge=1, le=90)
+    recording_announcement: str = Field(
+        default="This call may be recorded for service and quality purposes.",
+        min_length=10,
+        max_length=240,
+    )
     callback_message: str = Field(
         default="We have saved your callback request and the team will follow up.",
         min_length=10,
@@ -123,6 +131,8 @@ class RoutingUpdate(BaseModel):
             raise ValueError("Unsupported Never-Miss step")
         if "fallback" in self.never_miss and self.enabled and not self.fallback:
             raise ValueError("Add a fallback number for the Never-Miss chain")
+        if self.transcribe_answered_calls and not self.record_answered_calls:
+            raise ValueError("Answered-call transcription requires call recording")
         return self
 
 
@@ -141,6 +151,10 @@ def _normalise(value):
     value.setdefault("intent_prompt", "Tell me briefly what you are calling about, or use the keypad.")
     value.setdefault("voicemail_greeting", "Nobody is available right now. Your message will be recorded. Please leave it after the tone.")
     value.setdefault("transcribe_voicemail", False)
+    value.setdefault("record_answered_calls", False)
+    value.setdefault("transcribe_answered_calls", False)
+    value.setdefault("recording_retention_days", 30)
+    value.setdefault("recording_announcement", "This call may be recorded for service and quality purposes.")
     value.setdefault("callback_message", "We have saved your callback request and the team will follow up.")
     value.setdefault("missed_call_sms_enabled", False)
     value.setdefault("missed_call_sms_message", "Sorry we missed your call. Reply to this message and we will get back to you.")
@@ -244,6 +258,10 @@ def get_call_routing(number_id: str, user=Depends(current_user)):
             "intent_prompt": "Tell me briefly what you are calling about, or use the keypad.",
             "voicemail_greeting": "Nobody is available right now. Your message will be recorded. Please leave it after the tone.",
             "transcribe_voicemail": False,
+            "record_answered_calls": False,
+            "transcribe_answered_calls": False,
+            "recording_retention_days": 30,
+            "recording_announcement": "This call may be recorded for service and quality purposes.",
             "callback_message": "We have saved your callback request and the team will follow up.",
         }
 
@@ -301,7 +319,20 @@ def menu_xml(config, action_url, prefix=""):
     )
 
 
-def dial_group_xml(destinations, minutes, action_url, timeout, whisper_url="", sequential=False):
+def dial_group_xml(
+    destinations,
+    minutes,
+    action_url,
+    timeout,
+    whisper_url="",
+    sequential=False,
+    record=False,
+    recording_callback="",
+    recording_announcement="",
+    transcribe=False,
+    transcription_callback="",
+    transcription_language="en-GB",
+):
     numbers = "".join(
         '<Number'
         + (' url="' + escape(whisper_url, {'"': "&quot;"}) + '" method="POST"' if whisper_url else "")
@@ -310,22 +341,75 @@ def dial_group_xml(destinations, minutes, action_url, timeout, whisper_url="", s
         + "</Number>"
         for destination in destinations
     )
+    announcement = (
+        "<Say>" + escape(recording_announcement) + "</Say>"
+        if record and recording_announcement else ""
+    )
+    recording = ""
+    if record:
+        recording = ' record="record-from-answer-dual"'
+        if recording_callback:
+            recording += (
+                ' recordingStatusCallback="'
+                + escape(recording_callback, {'"': "&quot;"})
+                + '" recordingStatusCallbackMethod="POST"'
+                + ' recordingStatusCallbackEvent="completed absent"'
+            )
+    transcription = ""
+    if transcribe and transcription_callback:
+        transcription = (
+            '<Start><Transcription statusCallbackUrl="'
+            + escape(transcription_callback, {'"': "&quot;"})
+            + '" track="both_tracks" partialResults="false" languageCode="'
+            + escape(transcription_language)
+            + '" inboundTrackLabel="customer" outboundTrackLabel="agent"/></Start>'
+        )
     return (
-        '<Response><Dial timeout="'
+        "<Response>"
+        + transcription
+        + announcement
+        + '<Dial timeout="'
         + str(timeout)
         + ('" sequential="true' if sequential else '')
         + '" timeLimit="'
         + str(max(1, minutes) * 60)
         + '" action="'
         + escape(action_url, {'"': "&quot;"})
-        + '" method="POST">'
+        + '" method="POST"'
+        + recording
+        + ">"
         + numbers
-        + '</Dial></Response>'
+        + "</Dial></Response>"
     )
 
 
-def dial_xml(destination, minutes, action_url, timeout, whisper_url=""):
-    return dial_group_xml([destination], minutes, action_url, timeout, whisper_url, False)
+def dial_xml(
+    destination,
+    minutes,
+    action_url,
+    timeout,
+    whisper_url="",
+    record=False,
+    recording_callback="",
+    recording_announcement="",
+    transcribe=False,
+    transcription_callback="",
+    transcription_language="en-GB",
+):
+    return dial_group_xml(
+        [destination],
+        minutes,
+        action_url,
+        timeout,
+        whisper_url,
+        False,
+        record,
+        recording_callback,
+        recording_announcement,
+        transcribe,
+        transcription_callback,
+        transcription_language,
+    )
 
 
 def voicemail_xml(config, action_url, status_url, transcription_url=""):

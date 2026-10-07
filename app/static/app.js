@@ -127,6 +127,7 @@ async function loadCustomerOS() {
     const form = $('#intelligence-form');
     form.elements.enabled.checked = Boolean(intelligence.enabled);
     form.elements.analyse_voicemail.checked = Boolean(intelligence.analyse_voicemail);
+    form.elements.analyse_calls.checked = Boolean(intelligence.analyse_calls);
     form.elements.analyse_messages.checked = Boolean(intelligence.analyse_messages);
     form.elements.retention_days.value = String(intelligence.retention_days || 90);
     $('#intelligence-status').textContent = intelligence.configured
@@ -156,6 +157,7 @@ $('#intelligence-form').onsubmit = e => {
     await api('/api/conversation-intelligence/settings', 'PUT', {
       enabled: form.elements.enabled.checked,
       analyse_voicemail: form.elements.analyse_voicemail.checked,
+      analyse_calls: form.elements.analyse_calls.checked,
       analyse_messages: form.elements.analyse_messages.checked,
       retention_days: Number(form.elements.retention_days.value),
     });
@@ -349,6 +351,10 @@ function routingFormConfig() {
     intent_prompt: form.elements.intent_prompt.value,
     voicemail_greeting: form.elements.voicemail_greeting.value,
     transcribe_voicemail: form.elements.transcribe_voicemail.checked,
+    record_answered_calls: form.elements.record_answered_calls.checked,
+    transcribe_answered_calls: form.elements.transcribe_answered_calls.checked,
+    recording_retention_days: Number(form.elements.recording_retention_days.value),
+    recording_announcement: form.elements.recording_announcement.value,
     callback_message: form.elements.callback_message.value,
     missed_call_sms_enabled: form.elements.missed_call_sms_enabled.checked,
     missed_call_sms_message: form.elements.missed_call_sms_message.value,
@@ -368,6 +374,10 @@ function applyRoutingConfig(config) {
   form.elements.emergency_mode.value = config.emergency_mode || 'normal';
   form.elements.voicemail_greeting.value = config.voicemail_greeting || '';
   form.elements.transcribe_voicemail.checked = Boolean(config.transcribe_voicemail);
+  form.elements.record_answered_calls.checked = Boolean(config.record_answered_calls);
+  form.elements.transcribe_answered_calls.checked = Boolean(config.transcribe_answered_calls);
+  form.elements.recording_retention_days.value = String(config.recording_retention_days || 30);
+  form.elements.recording_announcement.value = config.recording_announcement || 'This call may be recorded for service and quality purposes.';
   form.elements.callback_message.value = config.callback_message || '';
   form.elements.missed_call_sms_enabled.checked = Boolean(config.missed_call_sms_enabled);
   form.elements.missed_call_sms_message.value = config.missed_call_sms_message || 'Sorry we missed your call. Reply to this message and we will get back to you.';

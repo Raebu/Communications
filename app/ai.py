@@ -227,8 +227,7 @@ def fallback_xml(call, remaining):
     r = VoiceResponse()
     if call.destination and remaining > 0:
         r.say("I will try to connect you to a person.", language="en-GB")
-        dial = r.dial(timeout=20, time_limit=remaining, action=settings.public_url + "/webhooks/twilio/voice-status", method="POST")
-        dial.number(call.destination)
+        r.redirect(settings.public_url + "/webhooks/twilio/voice-human-fallback", method="POST")
     else:
         r.say("A person is unavailable right now. Please contact the business directly. Goodbye.", language="en-GB")
         r.hangup()
