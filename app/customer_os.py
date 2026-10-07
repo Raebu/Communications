@@ -10,6 +10,7 @@ from .models import (
     Audit,
     Customer,
     CustomerEvent,
+    CustomerIdentity,
     CustomerState,
     GuaranteeRule,
     Outcome,
@@ -27,6 +28,65 @@ def aware(value):
     if not value:
         return value
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def register_verified_identity(db, tenant_id, customer_id, kind, value):
+    digest = identity_digest(tenant_id, kind, value)
+    existing = db.scalar(
+        select(CustomerIdentity).where(
+            CustomerIdentity.tenant_id == tenant_id,
+            CustomerIdentity.kind == kind,
+            CustomerIdentity.identity_hash == digest,
+        )
+    )
+    if existing:
+        if existing.customer_id != customer_id:
+            raise RuntimeError("Verified identity belongs to another customer")
+        existing.verified = True
+        return existing
+    identity = CustomerIdentity(
+        tenant_id=tenant_id,
+        customer_id=customer_id,
+        kind=kind,
+        identity_hash=digest,
+        encrypted_value=encrypt({"value": value}),
+        verified=True,
+    )
+    db.add(identity)
+    db.flush()
+    return identity
+
+
+def customer_for_identity(db, tenant_id, kind, value):
+    if not value:
+        return None
+    digest = identity_digest(tenant_id, kind, value)
+    identity = db.scalar(
+        select(CustomerIdentity).where(
+            CustomerIdentity.tenant_id == tenant_id,
+            CustomerIdentity.kind == kind,
+            CustomerIdentity.identity_hash == digest,
+            CustomerIdentity.verified.is_(True),
+        )
+    )
+    return identity.customer_id if identity else None
+
+
+def caller_brief(db, tenant_id, phone):
+    customer_id = customer_for_identity(db, tenant_id, "phone", phone)
+    if not customer_id:
+        return {"known": False, "customer_id": None}
+    _, state = customer_state(db, tenant_id, customer_id)
+    payload = state_payload(state)
+    open_promises = db.scalar(
+        select(func.count()).select_from(Promise).where(
+            Promise.tenant_id == tenant_id,
+            Promise.customer_id == customer_id,
+            Promise.status.in_(["open", "overdue"]),
+        )
+    )
+    payload.update({"known": True, "open_promises": open_promises})
+    return payload
 
 
 def record_event(db, tenant_id, kind, channel, source_id="", customer_id=None, payload=None):
@@ -160,6 +220,14 @@ def parsed_due(value):
     except ValueError:
         raise HTTPException(422, "Use a valid ISO date and time") from None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+@router.get("/caller-brief")
+def caller_brief_api(phone: str, user=Depends(current_user)):
+    if not phone.startswith("+44") or not phone[1:].isdigit() or len(phone) not in {12, 13}:
+        raise HTTPException(422, "Use a valid UK phone number")
+    with DB.begin() as db:
+        return caller_brief(db, user.tenant_id, phone)
 
 
 @router.get("/customers/{customer_id}/brain")
