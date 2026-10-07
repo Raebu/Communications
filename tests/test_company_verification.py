@@ -388,7 +388,7 @@ def test_identity_creation_is_bound_capped_and_reused(configured, monkeypatch):
     assert call.args[1]["idempotency_key"].endswith(attempt)
 
 
-def test_identity_qr_uses_one_time_mobile_handoff_and_fresh_stripe_url(configured, monkeypatch):
+def test_identity_qr_uses_one_time_mobile_handoff_and_stripe_modal(configured, monkeypatch):
     class FakeImage:
         def save(self, output):
             output.write(b"<svg></svg>")
