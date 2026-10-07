@@ -188,19 +188,46 @@ $('#quality-form').onsubmit=e=>{e.preventDefault();act(async()=>{const d=fields(
 async function loadCompanyVerification() {
   const value = await api('/api/company-verification');
   const status = $('#company-verification-status');
-  status.textContent = value.available ? (value.status === 'pending' ? 'Verifying — ' + value.message : value.message) : 'Secure company verification is being configured. Activation remains subject to verification.';
-  status.classList.toggle('checking', value.status === 'pending');
+  const checks = value.checks || {};
+  const prerequisiteProofs = Boolean(checks.business_email && checks.dns && checks.company_register);
+  const awaitingDirector = value.status === 'pending' && prerequisiteProofs && !checks.director_authority;
+
+  status.classList.remove('checking');
+  if (!value.available) {
+    status.textContent = 'Secure company verification is being configured. Activation remains subject to verification.';
+  } else if (value.status === 'verified') {
+    status.textContent = 'Company verification complete — your company, domain and director authority are verified.';
+  } else if (awaitingDirector) {
+    status.textContent = 'Company and domain verified — complete director identity to continue.';
+  } else if (value.status === 'pending') {
+    status.textContent = 'Verifying — we are checking your company and domain. Complete any waiting steps below.';
+    status.classList.add('checking');
+  } else {
+    status.textContent = value.message;
+  }
+
   $('#company-verification-explanation').textContent = value.explanation || '';
   $('#company-verification-form').hidden = !value.available || !['not_started','expired','invalidated'].includes(value.status);
   $('#company-proof-instructions').hidden = !value.available || !['pending','held','verified'].includes(value.status);
   $('#company-identity').hidden = !value.identity_ready;
   $('#company-verification-retry').hidden = !value.retryable;
-  $('#company-resend-email').hidden = Boolean(value.checks?.business_email) || value.status !== 'pending';
+  $('#company-resend-email').hidden = Boolean(checks.business_email) || value.status !== 'pending';
+
   if (value.checks) {
     const labels = {business_email:'Business email',dns:'Domain control',company_register:'Company register',director_authority:'Director authority'};
     $('#company-proof-checks').textContent = Object.entries(value.checks).map(([key,passed])=>`${labels[key]}: ${passed?'verified':'waiting'}`).join(' · ');
-    $('#company-dns-name').textContent = value.dns_name;
-    $('#company-dns-value').textContent = value.dns_value;
+
+    const dnsSetup = $('#company-dns-setup');
+    const dnsVerified = $('#company-dns-verified');
+    dnsSetup.hidden = Boolean(checks.dns);
+    dnsVerified.hidden = !checks.dns;
+
+    if (!checks.dns) {
+      $('#company-dns-name').textContent = '_raeburn-connect';
+      $('#company-dns-value').textContent = value.dns_value;
+      $('#company-dns-guidance').textContent = `In your DNS provider, add a TXT record. For Cloudflare and most DNS dashboards, enter only _raeburn-connect in the Name/Host field — the domain ${value.domain} is added automatically. Enter the exact value below as the TXT content, then save the record. Keep it in place for ongoing checks.`;
+    }
+
     if (value.telephone_status) $('#company-verification-explanation').textContent += ' Telephone approval: ' + value.telephone_status.replaceAll('_',' ') + '.';
   }
 }
