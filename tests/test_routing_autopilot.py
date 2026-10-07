@@ -189,17 +189,42 @@ def test_generated_draft_is_validated_but_not_saved(monkeypatch):
 
 def test_generated_draft_rejects_invalid_or_invented_number(monkeypatch):
     client, tenant_id, number_id = account()
-    bad = config()
-    bad["fallback"] = "+12345"
-    monkeypatch.setattr(ra, "_json_completion", lambda *args, **kwargs: bad)
+    invalid = config()
+    invalid["fallback"] = "+12345"
+    monkeypatch.setattr(ra, "_json_completion", lambda *args, **kwargs: invalid)
     response = client.post(
         f"/api/routing-autopilot/numbers/{number_id}/draft",
         json={"instruction": "Make my routing better without changing my numbers."},
         headers=HEADERS,
     )
     assert response.status_code == 422
+
+    invented = config()
+    invented["fallback"] = "+447700900088"
+    monkeypatch.setattr(ra, "_json_completion", lambda *args, **kwargs: invented)
+    response = client.post(
+        f"/api/routing-autopilot/numbers/{number_id}/draft",
+        json={"instruction": "Make my routing better without changing my numbers."},
+        headers=HEADERS,
+    )
+    assert response.status_code == 422
+
     with DB() as db:
         assert db.get(CallRouting, number_id) is None
+
+
+def test_generated_draft_allows_phone_explicitly_supplied_by_owner(monkeypatch):
+    client, tenant_id, number_id = account()
+    generated = config()
+    generated["fallback"] = "+447700900088"
+    monkeypatch.setattr(ra, "_json_completion", lambda *args, **kwargs: generated)
+    response = client.post(
+        f"/api/routing-autopilot/numbers/{number_id}/draft",
+        json={"instruction": "Change the fallback number to +447700900088 and keep the rest unchanged."},
+        headers=HEADERS,
+    )
+    assert response.status_code == 200
+    assert response.json()["draft"]["fallback"] == "+447700900088"
 
 
 def test_routing_update_schema_defaults_keep_existing_keypad_configs_compatible():
