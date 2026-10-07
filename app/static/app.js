@@ -62,6 +62,7 @@ async function load() {
   renderNumbers();
   if (me.email_verified) { const usage = await api('/api/usage'); $('#usage-summary').textContent = `${usage.sms_segments}/${usage.sms_allowance} SMS segments · ${usage.voice_minutes}/${usage.voice_allowance} call minutes this month`; }
   try { await loadOrders(); } catch(error) { notice(error.message); }
+  if (me.role === 'owner' && me.email_verified) { try { await loadNumberManagement(); } catch(error) { notice(error.message); } }
   try { await loadCustomerOS(); } catch(error) { notice(error.message); }
   show(me.email_verified ? 'overview' : 'account');
 }
@@ -87,6 +88,41 @@ $('#search-form').onsubmit = e => { e.preventDefault(); act(async () => {
   }
   if (!results.length) notice('No available numbers match these digits.');
 }); };
+async function loadNumberManagement() {
+  const [ports, calls] = await Promise.all([api('/api/number-porting'), api('/api/outbound-calls')]);
+  const portList = $('#porting-list');
+  if (portList) {
+    portList.replaceChildren();
+    for (const item of ports) portList.append(element('p', item.phone+' · '+item.status+(item.provider_reference?' · '+item.provider_reference:'')));
+    if (!ports.length) portList.append(element('p','No number ports in progress.'));
+  }
+  const callList = $('#outbound-call-list');
+  if (callList) {
+    callList.replaceChildren();
+    for (const item of calls.slice(0,10)) callList.append(element('p', item.destination+' · '+item.status+(item.error?' · '+item.error:'')));
+    if (!calls.length) callList.append(element('p','No outbound calls started yet.'));
+  }
+}
+
+$('#porting-form').onsubmit=e=>{e.preventDefault();act(async()=>{
+  const d=fields(e.target);
+  d.recent_bill_ready=Boolean(d.recent_bill_ready);
+  d.authority_confirmed=Boolean(d.authority_confirmed);
+  await api('/api/number-porting','POST',d);
+  e.target.reset();
+  await loadNumberManagement();
+  notice('Porting review started. No transfer occurs until the case is checked and submitted.');
+});};
+
+$('#outbound-call-form').onsubmit=e=>{e.preventDefault();act(async()=>{
+  const d=fields(e.target);
+  d.consent_confirmed=Boolean(d.consent_confirmed);
+  d.request_key=crypto.randomUUID();
+  const result=await api('/api/outbound-calls','POST',d);
+  await loadNumberManagement();
+  notice(result.status==='calling_agent'?'Calling your forwarding phone now. Answer it to connect the customer.':'Call request status: '+result.status+'.');
+});};
+
 async function loadCustomerOS() {
   const brief = await api('/api/customer-os/executive-brief');
   $('#executive-brief-summary').textContent = brief.summary;
@@ -182,8 +218,11 @@ $('#guarantee-form').onsubmit = e => {
 
 function renderNumbers() {
   $('#owned-numbers').replaceChildren(); $('#send-number').replaceChildren();
+  const outboundSelect = $('#outbound-call-number');
+  if (outboundSelect) outboundSelect.replaceChildren();
   for (const n of owned) {
     if (n.sms) { const option = element('option', n.phone); option.value = n.id; $('#send-number').append(option); }
+    if (n.voice && outboundSelect) { const option = element('option', n.phone); option.value = n.id; outboundSelect.append(option); }
     const card = element('article', undefined, 'owned'); card.append(element('h3', n.phone), element('p', `WhatsApp: ${n.whatsapp} · RCS: ${n.rcs}`));
     if (n.voice) { const label = element('label', 'Simple call forwarding destination (used when the call menu is off)'); const input = element('input'); input.type='tel'; input.value=n.forwarding; input.placeholder='+447700900000'; label.append(input); card.append(label, button('Save forwarding', async () => { await api(`/api/numbers/${n.id}/forwarding`, 'PUT', {destination:input.value}); notice('Call forwarding updated.'); })); }
     $('#owned-numbers').append(card);
