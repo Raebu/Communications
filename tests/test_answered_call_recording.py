@@ -14,7 +14,6 @@ from app.main import app
 from app.models import (
     Audit,
     Call,
-    CallRouting,
     CustomerEvent,
     DB,
     IntelligenceJob,
