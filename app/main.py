@@ -36,6 +36,7 @@ from .customer_os import (
 )
 from .ai import router as ai_router, start_voice, voice_turn, configured as ai_configured
 from .conversation_intelligence import router as intelligence_router, queue_event
+from .routing_autopilot import router as routing_autopilot_router, classify_intent
 from .models import AIProfile, Conversation, CompanyVerification
 from .autonomy import router as autonomy_router, inbound_ai, conversation
 from .relay import router as relay_router
@@ -67,6 +68,7 @@ app.include_router(company_verification_router)
 app.include_router(call_routing_router)
 app.include_router(customer_os_router)
 app.include_router(intelligence_router)
+app.include_router(routing_autopilot_router)
 app.include_router(ai_router)
 app.include_router(autonomy_router)
 
@@ -902,7 +904,14 @@ async def voice_menu(request: Request):
         if not route or t.status != "approved" or t.billing_status != "active" or call.status == "completed":
             return Response(unavailable_xml(), media_type="application/xml")
 
-        option = selected_option(route, p.get("Digits", ""))
+        digit = p.get("Digits", "")
+        if not digit and p.get("SpeechResult"):
+            try:
+                rate_limit("voice-intent:" + t.id, 30)
+                digit = classify_intent(route, p.get("SpeechResult", "")[:500], db, t.id)
+            except HTTPException:
+                digit = ""
+        option = selected_option(route, digit)
         if option and option.get("action") == "dial":
             members = ordered_members(db, t.id, option)
             call.destination = members[0]
