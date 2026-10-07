@@ -240,8 +240,10 @@ def status(user=Depends(current_user)):
         else:
             stage, stage_label = 1, 'Verification started'
         telephone_stage = json.loads(proof.provider_state or '{}').get('stage', 'not_started')
-        if proof.status == 'verified' and telephone_stage == 'approved':
-            stage, stage_label = 6, 'Telephone approval complete'
+        if proof.authority_verified and telephone_stage not in {'', 'not_started'}:
+            stage = 6
+            stage_label = ('Telephone approval complete' if telephone_stage == 'approved'
+                           else 'Telephone approval in progress')
         provider_state = json.loads(proof.provider_state or '{}')
         return {'available': settings.company_verification_enabled, 'status': proof.status,
                 'message': MESSAGES.get(proof.status, MESSAGES['pending']),
