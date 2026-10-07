@@ -28,7 +28,7 @@ from qrcode.image.svg import SvgPathImage
 from sqlalchemy.exc import IntegrityError
 
 from .config import settings
-from .models import ActionToken, Audit, CompanyVerification, DB, EmailJob, RateBucket, Tenant, User, VerifiedCompanyClaim, now, uid
+from .models import ActionToken, Audit, CompanyVerification, DB, EmailJob, Order, RateBucket, Tenant, User, VerifiedCompanyClaim, now, uid
 from .security import csrf, current_user, decrypt, encrypt, rate_limit
 
 router = APIRouter(prefix='/api/company-verification')
@@ -922,9 +922,26 @@ def verification_one():
                         from .regulatory_automation import advance
                         advance(db, tenant, proof, company)
                         # Check provider review often enough that approved accounts unlock promptly.
-                        proof.next_check_at = (now() + timedelta(hours=24)
-                                               if tenant.status == 'approved'
-                                               else now() + timedelta(minutes=5))
+                        if tenant.status == 'approved':
+                            waiting_orders = db.scalars(
+                                select(Order).where(
+                                    Order.tenant_id == tenant.id,
+                                    Order.status == 'awaiting_approval',
+                                    Order.number_type == tenant.bundle_type,
+                                )
+                            ).all()
+                            for order in waiting_orders:
+                                order.status = 'queued'
+                                order.error = ''
+                                db.add(Audit(
+                                    tenant_id=tenant.id,
+                                    actor='worker',
+                                    action='number.order.released_after_approval',
+                                    detail=order.id,
+                                ))
+                            proof.next_check_at = now() + timedelta(hours=24)
+                        else:
+                            proof.next_check_at = now() + timedelta(minutes=5)
                     else:
                         proof.next_check_at = now() + timedelta(hours=24)
                 else:
