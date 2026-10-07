@@ -294,7 +294,7 @@ def purchase(data: Purchase, user=Depends(current_user)):
                     raise HTTPException(409, "Idempotency key belongs to a different order")
                 return {"id": existing.id, "status": existing.status}
             if t.status != "approved" or not t.bundle_sid or t.bundle_type != data.type:
-                raise HTTPException(409, "Approved regulatory bundle for this number type required")
+                raise HTTPException(409, "Telephone approval is required for this type of number")
             if t.billing_status != "active":
                 raise HTTPException(402, "Active paid subscription required")
             if not t.twilio_sid:
@@ -790,15 +790,15 @@ def approve(tenant_id: str, data: Approval, user=Depends(current_user)):
             evidence = db.get(CompanyVerification, t.id)
             provider_state = json.loads(evidence.provider_state or '{}')
             if provider_state.get('stage') != 'approved' or provider_state.get('bundle') != data.bundle_sid:
-                raise HTTPException(409, "Use the automatically verified customer bundle; unrelated bundle IDs cannot approve this company")
+                raise HTTPException(409, "Use the approved telephone application linked to this company")
         client = tenant_client(t)
         bundle = client.numbers.v2.regulatory_compliance.bundles(data.bundle_sid).fetch()
         if bundle.status != "twilio-approved":
-            raise HTTPException(409, "The telephone provider has not approved this bundle")
+            raise HTTPException(409, "This telephone application has not yet been approved")
         regulation = client.numbers.v2.regulatory_compliance.regulations(bundle.regulation_sid).fetch()
         expected = {"Local": "local", "Mobile": "mobile", "TollFree": "toll-free"}[data.type]
         if regulation.iso_country != "GB" or regulation.number_type != expected or regulation.end_user_type != "business":
-            raise HTTPException(409, "Bundle country, number type or end-user type mismatch")
+            raise HTTPException(409, "This approval does not match the selected company or number type")
         if data.address_sid:
             client.addresses(data.address_sid).fetch()
         t.status, t.bundle_sid, t.address_sid, t.bundle_type = "approved", data.bundle_sid, data.address_sid, data.type
