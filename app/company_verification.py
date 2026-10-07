@@ -627,10 +627,10 @@ def telephone_preflight(user=Depends(current_user)):
             return result
         except ValueError as error:
             code = str(error)
-            detail = REASONS.get(code, 'Twilio live requirements are not ready for automatic submission.')
+            detail = REASONS.get(code, 'Telephone approval requirements are not ready for automatic submission.')
             raise HTTPException(409, detail) from None
         except Exception:
-            raise HTTPException(503, 'Twilio telephone approval preflight is temporarily unavailable.') from None
+            raise HTTPException(503, 'Telephone approval readiness check is temporarily unavailable.') from None
 
 
 @router.post('/telephone-start', dependencies=[Depends(csrf)])
@@ -650,10 +650,10 @@ def telephone_start(user=Depends(current_user)):
             result = preflight(tenant, proof, company)
         except ValueError as error:
             code = str(error)
-            detail = REASONS.get(code, 'Twilio live requirements are not ready for automatic submission.')
+            detail = REASONS.get(code, 'Telephone approval requirements are not ready for automatic submission.')
             raise HTTPException(409, detail) from None
         except Exception:
-            raise HTTPException(503, 'Twilio telephone approval preflight is temporarily unavailable.') from None
+            raise HTTPException(503, 'Telephone approval readiness check is temporarily unavailable.') from None
 
     with DB.begin() as db:
         tenant = db.scalar(select(Tenant).where(Tenant.id == user.tenant_id).with_for_update())
