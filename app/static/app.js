@@ -243,6 +243,7 @@ function addCallRouteRow(value = {}) {
   action.name = 'route_action';
   const actions = [
     ['dial','Ring people'],
+    ['queue','Place caller in a real queue'],
     ['ai','AI receptionist'],
     ['callback','Take callback request'],
     ['voicemail','Take voicemail'],
@@ -280,13 +281,20 @@ function addCallRouteRow(value = {}) {
     strategy.append(option);
   }
   strategyLabel.append(strategy);
-  dialSettings.append(phoneLabel, strategyLabel);
+  const queueCallbackLabel = element('label', undefined, 'check');
+  const queueCallback = element('input');
+  queueCallback.type = 'checkbox';
+  queueCallback.name = 'route_queue_callback';
+  queueCallback.checked = value.queue_callback_enabled !== false;
+  queueCallbackLabel.append(queueCallback, document.createTextNode(' Let callers press 1 to keep their place and receive a callback'));
+  dialSettings.append(phoneLabel, strategyLabel, queueCallbackLabel);
 
   const remove = button('Remove choice', () => { row.remove(); }, true);
   const refresh = () => {
-    const isDial = action.value === 'dial';
-    dialSettings.hidden = !isDial;
-    phone.required = isDial;
+    const humanRoute = action.value === 'dial' || action.value === 'queue';
+    dialSettings.hidden = !humanRoute;
+    phone.required = humanRoute;
+    queueCallbackLabel.hidden = action.value !== 'queue';
   };
   action.onchange = refresh;
   refresh();
@@ -309,8 +317,9 @@ function routingFormConfig() {
       description: row.querySelector('[name="route_description"]').value.trim(),
       action,
       destination: destinations[0] || '',
-      destinations: action === 'dial' ? destinations : [],
+      destinations: ['dial','queue'].includes(action) ? destinations : [],
       strategy: row.querySelector('[name="route_strategy"]').value,
+      queue_callback_enabled: row.querySelector('[name="route_queue_callback"]').checked,
     };
   }).filter(item => item.label);
 
