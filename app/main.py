@@ -210,7 +210,7 @@ def profile(data: Profile, user=Depends(current_user)):
         if changed:
             t.status, t.bundle_sid = "pending", ""
         audit(db, user, "profile.updated")
-        if changed and settings.smtp_host and settings.encryption_key:
+        if changed and settings.smtp_host and settings.encryption_key and not settings.company_verification_enabled:
             sender = settings.verification_email_from or settings.email_from
             db.add(EmailJob(recipient=user.email, encrypted_payload=encrypt({
                 "from": sender,

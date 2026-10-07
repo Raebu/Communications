@@ -136,25 +136,54 @@ def require_company_verified(db, tenant):
         raise HTTPException(409, 'Company verification is awaiting its scheduled refresh')
 
 
-def mail(db, recipient, subject, body):
+VERIFICATION_EMAIL_EVENTS = {
+    'business_email',
+    'verification_started',
+    'company_verified',
+    'director_verified',
+}
+
+
+def verification_event_mail(db, proof, event, recipient, subject, body):
+    if event not in VERIFICATION_EMAIL_EVENTS:
+        raise ValueError('unsupported verification email event')
+    key = 'verification-email:' + proof.attempt + ':' + event
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+    insert = pg_insert if db.bind.dialect.name == 'postgresql' else sqlite_insert
+    result = db.execute(
+        insert(RateBucket)
+        .values(key=key, count=1, expires_at=proof.expires_at + timedelta(days=2))
+        .on_conflict_do_nothing(index_elements=['key'])
+        .returning(RateBucket.key)
+    ).scalar_one_or_none()
+    if not result:
+        return False
     db.add(EmailJob(recipient=recipient, encrypted_payload=encrypt({
         'from': settings.verification_email_from or settings.email_from,
-        'subject': subject + ' — Raeburn Connect', 'body': body + '\n\n' + settings.public_url + '/',
+        'subject': subject + ' — Raeburn Connect',
+        'body': body + '\n\n' + settings.public_url + '/',
+        'category': 'company_verification',
+        'event': event,
+        'attempt': proof.attempt,
     })))
+    return True
 
 
 def email_challenge(db, proof):
-    if (proof.email_sends or 0) >= 5:
-        raise HTTPException(429, 'Maximum business email links reached for this verification')
-    proof.email_sends = (proof.email_sends or 0) + 1
+    if proof.email_sends:
+        raise HTTPException(409, 'The business email verification message has already been sent for this verification attempt')
+    proof.email_sends = 1
     token = secrets.token_urlsafe(48)
     proof.email_token_hash = hashlib.sha256(token.encode()).hexdigest()
-    proof.email_expires_at = now() + timedelta(minutes=30)
+    proof.email_expires_at = proof.expires_at
     link = settings.public_url + '/?company_proof=' + token
-    mail(db, proof.mailbox, 'Confirm your business email',
-         'Please confirm access to your business email for company verification.\n\n' + link
-         + '\n\nSign in to the account that requested this check. The link expires in 30 minutes. '
-         'Email access alone does not approve a company. Ignore this email if you did not request it.')
+    verification_event_mail(
+        db, proof, 'business_email', proof.mailbox, 'Confirm your business email',
+        'Please confirm access to your business email for company verification.\n\n' + link
+        + '\n\nSign in to the account that requested this check. The link remains valid for this verification attempt. '
+        'Email access alone does not approve a company. Ignore this email if you did not request it.'
+    )
 
 
 def owner(user):
@@ -247,9 +276,11 @@ def start(data: Start, user=Depends(current_user)):
         db.add(proof)
         tenant.status, tenant.bundle_sid, tenant.address_sid, tenant.bundle_type = 'pending', '', '', ''
         email_challenge(db, proof)
-        mail(db, user.email, 'Your company verification has started',
-             'Thank you — we are checking your company. Confirm your business email and add the DNS TXT record shown in your account. '
-             'A current director will then complete a secure identity check. We will keep you updated automatically.')
+        verification_event_mail(
+            db, proof, 'verification_started', user.email, 'Your company verification has started',
+            'Thank you — we are checking your company. Confirm your business email and add the DNS TXT record shown in your account. '
+            'A current director will then complete a secure identity check.'
+        )
         db.add(Audit(tenant_id=tenant.id, actor=user.id, action='company.verification.started', detail=proof.attempt))
     return {'status': 'pending'}
 
@@ -279,17 +310,9 @@ def confirm_email(data: Token, user=Depends(current_user)):
 @router.post('/resend-email', dependencies=[Depends(csrf)])
 def resend_email(user=Depends(current_user)):
     owner(user)
-    rate_limit('company-resend:' + user.id, 2)
-    with DB.begin() as db:
-        tenant = db.scalar(select(Tenant).where(Tenant.id == user.tenant_id).with_for_update())
-        proof = db.get(CompanyVerification, tenant.id)
-        if not proof or proof.status != 'pending' or proof.user_id != user.id or aware(proof.expires_at) < now():
-            raise HTTPException(409, 'Start a current verification first')
-        if not proof.email_verified:
-            if proof.email_expires_at and aware(proof.email_expires_at) > now() + timedelta(minutes=29):
-                raise HTTPException(429, 'Please wait one minute before requesting another link')
-            email_challenge(db, proof)
-    return {'status': 'requested'}
+    raise HTTPException(409, 'One business email verification message is sent per verification attempt. Start a new verification if the link has expired.')
+
+
 
 @router.post('/retry', dependencies=[Depends(csrf)])
 def retry(user=Depends(current_user)):
@@ -480,17 +503,10 @@ def reconcile_identity(proof, officers):
 
 
 def notify_state(db, proof):
+    # Progress, holds, retries and provider polling are intentionally UI-only.
+    # Verification emails are emitted only by the four named event transitions.
     stage = json.loads(proof.provider_state or '{}').get('stage', '')
-    notification_stage = stage if stage in {'approved', 'pending_provider_approval'} else ''
-    state = proof.status + ':' + proof.reason + ':' + notification_stage
-    if state == proof.last_notified:
-        return
-    user = db.get(User, proof.user_id)
-    mail(db, user.email, 'Your company verification update',
-         MESSAGES.get(proof.status, MESSAGES['pending']) + '\n\n' + REASONS.get(proof.reason, '')
-         + ('\n\nTelephone approval is complete. You can now choose a subscription and activate your number.' if stage == 'approved'
-            else '\n\nYour telephone registration is with the provider for approval.' if stage == 'pending_provider_approval' else ''))
-    proof.last_notified = state
+    proof.last_notified = proof.status + ':' + proof.reason + ':' + stage
 
 
 def invalidate(db, tenant):
@@ -572,6 +588,19 @@ def verification_one():
                 proof.dns_verified = txt_matches(proof)
                 proof.authority_verified = reconcile_identity(proof, officers)
                 proof.reason = ''
+                user = db.get(User, proof.user_id)
+                if proof.email_verified and proof.dns_verified and proof.registry_verified:
+                    verification_event_mail(
+                        db, proof, 'company_verified', user.email, 'Your company and domain are verified',
+                        'Your business email, domain control and Companies House company details are verified. '
+                        'Complete the secure director identity check in your Raeburn Connect account to continue.'
+                    )
+                if proof.authority_verified:
+                    verification_event_mail(
+                        db, proof, 'director_verified', user.email, 'Your director identity is verified',
+                        'Your director identity has been securely verified and matched to a current Companies House director. '
+                        'Your company verification is complete.'
+                    )
                 if all([proof.email_verified, proof.dns_verified, proof.registry_verified, proof.authority_verified]):
                     claim = db.scalar(select(VerifiedCompanyClaim).where(
                         (VerifiedCompanyClaim.company_number == proof.company_number) | (VerifiedCompanyClaim.domain == proof.domain)
@@ -595,12 +624,8 @@ def verification_one():
                     proof.status = 'pending'
                     if tenant.status == 'approved':
                         tenant.status = 'pending'
-                if (proof.status == 'pending' and proof.reminders < 2
-                        and now() > aware(proof.created_at) + timedelta(days=proof.reminders + 1)):
-                    mail(db, db.get(User, proof.user_id).email, 'A quick reminder to finish company verification',
-                         'Your company verification is waiting for a few details. Please visit your account to complete the remaining steps. '
-                         'Your activation stays on hold until those checks are complete.')
-                    proof.reminders += 1
+                # Verification progress is shown in-product; no reminder emails are sent.
+                proof.reminders = 0
                 notify_state(db, proof)
             except ValueError as error:
                 code = str(error)
