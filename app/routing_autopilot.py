@@ -180,6 +180,25 @@ def draft(number_id: str, data: DraftRequest, user=Depends(current_user)):
             422,
             "The generated routing draft introduced a phone number you did not provide. Nothing was changed.",
         )
+    instruction = data.instruction.lower()
+    if (
+        validated.record_answered_calls
+        and not current.get("record_answered_calls", False)
+        and not any(term in instruction for term in ("record", "recording"))
+    ):
+        raise HTTPException(
+            422,
+            "Answered-call recording can only be enabled when you explicitly request recording. Nothing was changed.",
+        )
+    if (
+        validated.transcribe_answered_calls
+        and not current.get("transcribe_answered_calls", False)
+        and not any(term in instruction for term in ("transcrib", "transcription"))
+    ):
+        raise HTTPException(
+            422,
+            "Answered-call transcription can only be enabled when you explicitly request transcription. Nothing was changed.",
+        )
     return {
         "draft": validated.model_dump(),
         "changed": validated.model_dump() != RoutingUpdate.model_validate(current).model_dump(),
