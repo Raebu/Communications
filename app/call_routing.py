@@ -334,6 +334,7 @@ def dial_group_xml(
     transcribe=False,
     transcription_callback="",
     transcription_language="en-GB",
+    caller_id="",
 ):
     numbers = "".join(
         '<Number'
@@ -378,6 +379,7 @@ def dial_group_xml(
         + '" action="'
         + escape(action_url, {'"': "&quot;"})
         + '" method="POST"'
+        + (' callerId="' + escape(caller_id, {'"': "&quot;"}) + '"' if caller_id else "")
         + recording
         + ">"
         + numbers
@@ -397,6 +399,7 @@ def dial_xml(
     transcribe=False,
     transcription_callback="",
     transcription_language="en-GB",
+    caller_id="",
 ):
     return dial_group_xml(
         [destination],
@@ -411,6 +414,7 @@ def dial_xml(
         transcribe,
         transcription_callback,
         transcription_language,
+        caller_id,
     )
 
 
