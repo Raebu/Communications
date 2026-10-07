@@ -11,7 +11,7 @@ from sqlalchemy import select
 from .call_routing import RoutingUpdate, initial_action, is_open, selected_option, _config
 from .config import settings
 from .models import CallRouting, DB, Number
-from .security import current_user
+from .security import csrf, current_user, rate_limit
 
 router = APIRouter(prefix="/api/routing-autopilot")
 
@@ -101,10 +101,11 @@ def _default_current(db, number):
     }
 
 
-@router.post("/numbers/{number_id}/draft")
+@router.post("/numbers/{number_id}/draft", dependencies=[Depends(csrf)])
 def draft(number_id: str, data: DraftRequest, user=Depends(current_user)):
     if user.role != "owner":
         raise HTTPException(403, "Account owner required")
+    rate_limit("routing-autopilot:" + user.id, 6)
     with DB() as db:
         number = _number(db, user.tenant_id, number_id)
         current = _default_current(db, number)
@@ -274,6 +275,7 @@ def simulate(config, scenario):
     return {"steps": steps, "ends_safely": False}
 
 
-@router.post("/simulate")
+@router.post("/simulate", dependencies=[Depends(csrf)])
 def simulation(data: SimulationRequest, user=Depends(current_user)):
+    rate_limit("routing-simulation:" + user.id, 30)
     return simulate(data.config, data)
