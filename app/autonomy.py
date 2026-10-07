@@ -542,6 +542,17 @@ def action_one(job_id=None):
                     db.add(lead)
                     db.flush()
                 receipt = {"lead_id": lead.id}
+                if c.customer_id:
+                    from .customer_os import record_event
+                    record_event(
+                        db,
+                        t.id,
+                        "lead.captured",
+                        c.channel,
+                        lead.id,
+                        c.customer_id,
+                        {"lead_id": lead.id, "summary": lead.summary},
+                    )
             elif j.kind == "email":
                 if not settings.smtp_host or not settings.email_from:
                     raise RuntimeError("Email unavailable")
@@ -552,6 +563,17 @@ def action_one(job_id=None):
                 db.add(job)
                 db.flush()
                 receipt = {"email_job_id": job.id, "delivery": "queued"}
+                if c.customer_id:
+                    from .customer_os import record_event
+                    record_event(
+                        db,
+                        t.id,
+                        "email.queued",
+                        "email",
+                        job.id,
+                        c.customer_id,
+                        {"email_job_id": job.id, "recipient": payload["email"]},
+                    )
             else:
                 raise RuntimeError("Unknown action")
             j.status, j.receipt = "completed", json.dumps(receipt)
