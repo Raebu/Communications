@@ -942,13 +942,29 @@ def verification_one():
                                      detail='automatic_after_company_verification'))
                     if settings.verification_auto_twilio or provider_state.get('submission_authorized'):
                         from .regulatory_automation import advance
-                        advance(db, tenant, proof, company)
-                        # Check provider review often enough that approved accounts unlock promptly.
-                        if tenant.status == 'approved':
-                            release_waiting_orders(db, tenant)
+                        try:
+                            advance(db, tenant, proof, company)
+                        except ValueError as provider_error:
+                            # Raeburn KYC remains verified even if telephone approval
+                            # needs attention or the remote provider result is uncertain.
+                            code = str(provider_error)
+                            provider_state = json.loads(proof.provider_state or '{}')
+                            provider_state['reason'] = code if code in REASONS else 'provider_requirements'
+                            provider_state['stage'] = (
+                                'rejected' if code == 'provider_rejected' else 'needs_attention'
+                            )
+                            proof.provider_state = json.dumps(provider_state)
+                            proof.reason = provider_state['reason']
+                            tenant.status = 'pending'
                             proof.next_check_at = now() + timedelta(hours=24)
                         else:
-                            proof.next_check_at = now() + timedelta(minutes=5)
+                            proof.reason = ''
+                            # Check provider review often enough that approved accounts unlock promptly.
+                            if tenant.status == 'approved':
+                                release_waiting_orders(db, tenant)
+                                proof.next_check_at = now() + timedelta(hours=24)
+                            else:
+                                proof.next_check_at = now() + timedelta(minutes=5)
                     else:
                         proof.next_check_at = now() + timedelta(hours=24)
                 else:
