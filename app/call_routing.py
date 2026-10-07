@@ -456,9 +456,9 @@ def queue_wait_xml(position, average_wait, callback_url="", callback_enabled=Tru
             + escape(callback_url, {'"': "&quot;"})
             + '" method="POST"><Say>'
             + escape(wait_text + " Press 1 to leave the queue and receive a callback instead.")
-            + "</Say></Gather><Pause length="5"/></Response>"
+            + '</Say></Gather><Pause length="5"/></Response>'
         )
-    return "<Response><Say>" + escape(wait_text) + "</Say><Pause length="8"/></Response>"
+    return '<Response><Say>' + escape(wait_text) + '</Say><Pause length="8"/></Response>'
 
 
 def queue_agent_xml(
