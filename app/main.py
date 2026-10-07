@@ -69,9 +69,17 @@ async def security_headers(request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self'; frame-ancestors 'none'"
-    )
+    if request.url.path.startswith('/api/company-verification/identity-mobile/'):
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; style-src 'self'; script-src 'self' https://js.stripe.com; "
+            "frame-src https://js.stripe.com https://hooks.stripe.com https://verify.stripe.com; "
+            "connect-src 'self' https://api.stripe.com https://r.stripe.com https://m.stripe.network; "
+            "img-src 'self' data: https://*.stripe.com; frame-ancestors 'none'"
+        )
+    else:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self'; frame-ancestors 'none'"
+        )
     response.headers["Cache-Control"] = "no-store"
     if settings.environment == "production":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
