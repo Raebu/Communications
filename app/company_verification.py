@@ -5,6 +5,7 @@ identity is retrieved from Stripe and matched to a current registered director.
 No applicant-controlled URL is fetched and no identity document is stored here.
 """
 import hashlib
+from io import BytesIO
 import hmac
 import json
 import re
@@ -16,12 +17,14 @@ from urllib.parse import urlsplit
 
 import dns.resolver
 import httpx
+import qrcode
 import stripe
 import tldextract
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
+from qrcode.image.svg import SvgPathImage
 from sqlalchemy.exc import IntegrityError
 
 from .config import settings
@@ -433,6 +436,42 @@ def identity(user=Depends(current_user)):
         if parsed.scheme != 'https' or parsed.hostname != 'verify.stripe.com':
             raise HTTPException(409, 'Identity check is processing; return to your account shortly')
         return {'url': session.url}
+
+
+@router.get('/identity-qr')
+def identity_qr(user=Depends(current_user)):
+    owner(user)
+    rate_limit('company-identity-qr:' + user.id, 20)
+    with DB() as db:
+        tenant = db.get(Tenant, user.tenant_id)
+        proof = db.get(CompanyVerification, tenant.id)
+        if (not proof or proof.user_id != user.id or not proof.identity_session
+                or proof.profile_hash != profile_hash(tenant)
+                or not all([proof.email_verified, proof.dns_verified, proof.registry_verified])):
+            raise HTTPException(409, 'Start the director identity check first')
+
+        try:
+            session = identity_client().v1.identity.verification_sessions.retrieve(proof.identity_session)
+        except Exception:
+            raise HTTPException(503, 'The director identity session is temporarily unavailable') from None
+
+        metadata = stripe_dict(session.metadata)
+        if (metadata.get('tenant_id') != tenant.id or metadata.get('attempt') != proof.attempt
+                or (settings.environment == 'production' and not session.livemode)):
+            raise HTTPException(409, 'Identity verification does not match this company application')
+
+        parsed = urlsplit(session.url or '')
+        if parsed.scheme != 'https' or parsed.hostname != 'verify.stripe.com':
+            raise HTTPException(409, 'The director identity session is no longer available for handoff')
+
+        qr = qrcode.QRCode(version=None, box_size=8, border=4)
+        qr.add_data(session.url)
+        qr.make(fit=True)
+        image = qr.make_image(image_factory=SvgPathImage)
+        output = BytesIO()
+        image.save(output)
+        return Response(content=output.getvalue(), media_type='image/svg+xml',
+                        headers={'Content-Disposition': 'inline; filename="director-identity.svg"'})
 
 
 def registry(tenant):

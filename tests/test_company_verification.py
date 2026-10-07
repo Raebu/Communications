@@ -388,6 +388,40 @@ def test_identity_creation_is_bound_capped_and_reused(configured, monkeypatch):
     assert call.args[1]["idempotency_key"].endswith(attempt)
 
 
+def test_identity_qr_renders_current_matching_stripe_session(configured, monkeypatch):
+    class StripeLike:
+        def __init__(self, **values):
+            self.__dict__.update(values)
+        def to_dict_recursive(self):
+            def conv(value):
+                if isinstance(value, StripeLike):
+                    return {k: conv(v) for k, v in value.__dict__.items()}
+                return value
+            return {k: conv(v) for k, v in self.__dict__.items()}
+
+    c, tid = applicant()
+    ready_for_identity(c, tid)
+    with DB.begin() as db:
+        proof = db.get(CompanyVerification, tid)
+        proof.identity_session = "vs_live_qr"
+        attempt = proof.attempt
+
+    session = StripeLike(
+        id="vs_live_qr",
+        metadata=StripeLike(attempt=attempt, tenant_id=tid),
+        livemode=True,
+        url="https://verify.stripe.com/example-session",
+    )
+    api = MagicMock()
+    api.v1.identity.verification_sessions.retrieve.return_value = session
+    monkeypatch.setattr(cv, "identity_client", lambda: api)
+
+    response = c.get("/api/company-verification/identity-qr")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/svg+xml")
+    assert b"<svg" in response.content
+
+
 def test_stripe_object_metadata_and_options_are_supported(configured, monkeypatch):
     class StripeLike:
         def __init__(self, **values):
