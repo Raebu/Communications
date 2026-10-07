@@ -252,8 +252,11 @@ def customer_destination(config, brief):
     owner = str(brief.get("owner") or "").strip().casefold()
     if owner:
         for item in policy.get("owner_routes") or []:
-            if str(item.get("owner") or "").strip().casefold() == owner:
-                return item.get("destination", "")
+            if (
+                str(item.get("owner") or "").strip().casefold() == owner
+                and item.get("destination")
+            ):
+                return item["destination"]
     if brief.get("open_promises", 0) and policy.get("open_promise_destination"):
         return policy["open_promise_destination"]
     if (
