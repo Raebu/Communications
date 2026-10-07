@@ -249,6 +249,90 @@ def test_send_cap_and_subscription_gate():
     assert c.post('/api/messages',json=data,headers=HEADERS).status_code==409
 
 
+def test_call_menu_routes_choice_and_falls_back_when_unanswered(monkeypatch):
+    c,t=customer()
+    enable(t)
+    n=number(t)
+    payload={
+        'enabled':True,
+        'greeting':'Thank you for calling Example Limited.',
+        'fallback':'+447700900099',
+        'ring_seconds':20,
+        'options':[
+            {'digit':'1','label':'Sales','destination':'+447700900011'},
+            {'digit':'2','label':'Accounts','destination':'+447700900022'},
+            {'digit':'0','label':'Operator','destination':'+447700900033'},
+        ],
+    }
+    saved=c.put(f'/api/numbers/{n}/call-routing',json=payload,headers=HEADERS)
+    assert saved.status_code==200
+    loaded=c.get(f'/api/numbers/{n}/call-routing').json()
+    assert loaded['enabled'] is True
+    assert loaded['options'][0]['label']=='Sales'
+
+    monkeypatch.setattr('app.main.within_budget',lambda client,tenant:True)
+    monkeypatch.setattr('app.main.tenant_client',lambda tenant:MagicMock())
+    initial={'To':'+442080001001','From':'+447700900001','CallSid':'CAivr'}
+    menu=twilio_post(c,'/webhooks/twilio/voice',t,initial)
+    assert menu.status_code==200
+    assert '<Gather' in menu.text
+    assert 'Press 1 for Sales' in menu.text
+    assert '+447700900011' not in menu.text
+
+    selected=twilio_post(c,'/webhooks/twilio/voice-menu',t,{'CallSid':'CAivr','Digits':'1'})
+    assert selected.status_code==200
+    assert '<Dial' in selected.text
+    assert '+447700900011' in selected.text
+    assert '+447700900099' not in selected.text
+
+    fallback=twilio_post(c,'/webhooks/twilio/voice-route-result',t,{
+        'CallSid':'CAivr','DialCallStatus':'no-answer','DialCallDuration':'0'
+    })
+    assert fallback.status_code==200
+    assert '<Dial' in fallback.text
+    assert '+447700900099' in fallback.text
+
+
+def test_call_menu_invalid_choice_retries_once_then_uses_fallback(monkeypatch):
+    c,t=customer()
+    enable(t)
+    n=number(t)
+    payload={
+        'enabled':True,
+        'greeting':'Thank you for calling Example Limited.',
+        'fallback':'+447700900099',
+        'ring_seconds':15,
+        'options':[{'digit':'1','label':'Sales','destination':'+447700900011'}],
+    }
+    assert c.put(f'/api/numbers/{n}/call-routing',json=payload,headers=HEADERS).status_code==200
+    monkeypatch.setattr('app.main.within_budget',lambda client,tenant:True)
+    monkeypatch.setattr('app.main.tenant_client',lambda tenant:MagicMock())
+    initial={'To':'+442080001001','From':'+447700900001','CallSid':'CAinvalid'}
+    assert '<Gather' in twilio_post(c,'/webhooks/twilio/voice',t,initial).text
+
+    retry=twilio_post(c,'/webhooks/twilio/voice-menu',t,{'CallSid':'CAinvalid','Digits':'9'})
+    assert '<Gather' in retry.text
+    assert 'did not recognise' in retry.text
+
+    fallback=twilio_post(c,'/webhooks/twilio/voice-menu',t,{'CallSid':'CAinvalid','Digits':'9'})
+    assert '<Dial' in fallback.text
+    assert '+447700900099' in fallback.text
+
+
+def test_call_menu_rejects_loopback_destination():
+    c,t=customer()
+    enable(t)
+    n=number(t)
+    response=c.put(f'/api/numbers/{n}/call-routing',json={
+        'enabled':True,
+        'greeting':'Thank you for calling Example Limited.',
+        'fallback':'+447700900099',
+        'ring_seconds':20,
+        'options':[{'digit':'1','label':'Sales','destination':'+442080001001'}],
+    },headers=HEADERS)
+    assert response.status_code==422
+
+
 def test_voice_requires_signature_and_active_account(monkeypatch):
     c,t=customer()
     enable(t)
