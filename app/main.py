@@ -1,4 +1,5 @@
 import hashlib
+import json
 import secrets
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -854,6 +855,91 @@ def _next_chain(route, first):
     return [first] + [step for step in route.get("never_miss", []) if step != first]
 
 
+def _call_has_event(db, tenant_id, call_sid, kind):
+    rows = db.scalars(
+        select(CustomerEvent).where(
+            CustomerEvent.tenant_id == tenant_id,
+            CustomerEvent.kind == kind,
+        ).order_by(CustomerEvent.occurred_at.desc()).limit(200)
+    ).all()
+    for row in rows:
+        if not row.encrypted_payload:
+            continue
+        try:
+            if decrypt(row.encrypted_payload).get("call_sid") == call_sid:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _human_media_options(db, tenant, number, call):
+    config = routing_settings_for(db, number) or {}
+    record = bool(config.get("record_answered_calls"))
+    transcribe = bool(config.get("transcribe_answered_calls") and record)
+    announcement = ""
+    if record and not _call_has_event(db, tenant.id, call.sid, "call.recording.disclosed"):
+        announcement = config.get(
+            "recording_announcement",
+            "This call may be recorded for service and quality purposes.",
+        )
+        event = _call_event(db, tenant.id, call.sid)
+        record_event(
+            db,
+            tenant.id,
+            "call.recording.disclosed",
+            "voice",
+            call.sid + ":recording-disclosure",
+            event.customer_id if event else None,
+            {"call_sid": call.sid},
+        )
+    start_transcription = transcribe and not _call_has_event(
+        db, tenant.id, call.sid, "call.transcription.requested"
+    )
+    if start_transcription:
+        event = _call_event(db, tenant.id, call.sid)
+        record_event(
+            db,
+            tenant.id,
+            "call.transcription.requested",
+            "voice",
+            call.sid + ":transcription-requested",
+            event.customer_id if event else None,
+            {"call_sid": call.sid},
+        )
+    return {
+        "record": record,
+        "recording_callback": settings.public_url + "/webhooks/twilio/call-recording" if record else "",
+        "recording_announcement": announcement,
+        "transcribe": start_transcription,
+        "transcription_callback": settings.public_url + "/webhooks/twilio/call-transcription" if start_transcription else "",
+        "transcription_language": "en-GB",
+    }
+
+
+def _human_dial_xml(
+    db,
+    tenant,
+    number,
+    call,
+    destinations,
+    action_url,
+    timeout,
+    whisper_url="",
+    sequential=False,
+):
+    media = _human_media_options(db, tenant, number, call)
+    return dial_group_xml(
+        destinations,
+        call.reserved_minutes,
+        action_url,
+        timeout,
+        whisper_url,
+        sequential,
+        **media,
+    )
+
+
 def _never_miss_xml(db, tenant, number, call, route, step=0):
     chain = route.get("never_miss") or []
     event = _call_event(db, tenant.id, call.sid)
@@ -865,9 +951,12 @@ def _never_miss_xml(db, tenant, number, call, route, step=0):
                 continue
             call.destination = fallback
             call.status = "routing_fallback"
-            return dial_xml(
-                fallback,
-                call.reserved_minutes,
+            return _human_dial_xml(
+                db,
+                tenant,
+                number,
+                call,
+                [fallback],
                 settings.public_url + "/webhooks/twilio/voice-never-miss?step=" + str(index + 1),
                 route.get("ring_seconds", 20),
                 _whisper_url(call, route),
@@ -960,9 +1049,12 @@ async def voice(request: Request):
                 if action == "menu" and brief.get("known") and brief.get("vip") and route.get("vip_destination"):
                     call.destination = route["vip_destination"]
                     call.status = "routing_vip"
-                    xml = dial_xml(
-                        route["vip_destination"],
-                        minutes,
+                    xml = _human_dial_xml(
+                        db,
+                        t,
+                        n,
+                        call,
+                        [route["vip_destination"]],
                         settings.public_url + "/webhooks/twilio/voice-never-miss?step=0",
                         route.get("ring_seconds", 20),
                         _whisper_url(call, route),
@@ -974,7 +1066,15 @@ async def voice(request: Request):
                     xml = _direct_action_xml(db, t, n, call, route, action)
             else:
                 ai_xml = start_voice(db, t, n, call) if ai_allowed else None
-                xml = dial_xml(call.destination, minutes, settings.public_url + "/webhooks/twilio/voice-status", 20)
+                xml = _human_dial_xml(
+                    db,
+                    t,
+                    n,
+                    call,
+                    [call.destination],
+                    settings.public_url + "/webhooks/twilio/voice-status",
+                    20,
+                )
                 if ai_xml:
                     xml = ai_xml
         else:
@@ -1007,9 +1107,12 @@ async def voice_menu(request: Request):
             members = ordered_members(db, t.id, option)
             call.destination = members[0]
             call.status = "routing"
-            xml = dial_group_xml(
+            xml = _human_dial_xml(
+                db,
+                t,
+                n,
+                call,
                 members,
-                call.reserved_minutes,
                 settings.public_url + "/webhooks/twilio/voice-route-result",
                 route.get("ring_seconds", 20),
                 _whisper_url(call, route),
