@@ -841,7 +841,7 @@ async def voice(request: Request):
             minutes = min(10, max(0, settings.voice_monthly_minutes - committed))
             allowed = minutes > 0 and within_budget(tenant_client(t), t)
             if allowed:
-                destination = route["fallback"] if route else n.forwarding
+                destination = "" if route else n.forwarding
                 call = Call(sid=sid, tenant_id=t.id, number_id=n.id, destination=destination, reserved_minutes=minutes)
                 db.add(call)
                 caller = p.get("From", "")
