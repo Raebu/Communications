@@ -69,6 +69,29 @@ class BusinessHours(BaseModel):
         return self
 
 
+class OwnerRoute(BaseModel):
+    owner: str = Field(min_length=1, max_length=100)
+    destination: str = Field(pattern=PHONE)
+
+
+class CustomerRouting(BaseModel):
+    enabled: bool = False
+    owner_routes: list[OwnerRoute] = Field(default_factory=list, max_length=20)
+    known_customer_destination: str = Field(default="", pattern=r"^(?:\+44(?:[12]\d{9}|7[1-57-9]\d{8}))?$")
+    open_promise_destination: str = Field(default="", pattern=r"^(?:\+44(?:[12]\d{9}|7[1-57-9]\d{8}))?$")
+    risk_destination: str = Field(default="", pattern=r"^(?:\+44(?:[12]\d{9}|7[1-57-9]\d{8}))?$")
+    risk_threshold: int = Field(default=70, ge=1, le=100)
+    revenue_destination: str = Field(default="", pattern=r"^(?:\+44(?:[12]\d{9}|7[1-57-9]\d{8}))?$")
+    revenue_threshold: int = Field(default=100000, ge=0, le=100_000_000)
+
+    @model_validator(mode="after")
+    def validate_customer_routes(self):
+        owners = [item.owner.strip().casefold() for item in self.owner_routes]
+        if len(owners) != len(set(owners)):
+            raise ValueError("Each relationship owner can only have one routing destination")
+        return self
+
+
 class RoutingUpdate(BaseModel):
     enabled: bool = False
     greeting: str = Field(
@@ -86,6 +109,7 @@ class RoutingUpdate(BaseModel):
         max_length=4,
     )
     vip_destination: str = Field(default="", pattern=r"^(?:\+44(?:[12]\d{9}|7[1-57-9]\d{8}))?$")
+    customer_routing: CustomerRouting = Field(default_factory=CustomerRouting)
     whisper: bool = True
     intent_first: bool = False
     intent_prompt: str = Field(
@@ -147,6 +171,7 @@ def _normalise(value):
     value.setdefault("emergency_mode", "normal")
     value.setdefault("never_miss", ["fallback", "ai", "callback"])
     value.setdefault("vip_destination", "")
+    value.setdefault("customer_routing", CustomerRouting().model_dump())
     value.setdefault("whisper", True)
     value.setdefault("intent_first", False)
     value.setdefault("intent_prompt", "Tell me briefly what you are calling about, or use the keypad.")
@@ -255,6 +280,7 @@ def get_call_routing(number_id: str, user=Depends(current_user)):
             "emergency_mode": "normal",
             "never_miss": ["fallback", "ai", "callback"],
             "vip_destination": "",
+            "customer_routing": CustomerRouting().model_dump(),
             "whisper": True,
             "intent_first": False,
             "intent_prompt": "Tell me briefly what you are calling about, or use the keypad.",
@@ -282,6 +308,16 @@ def update_call_routing(number_id: str, data: RoutingUpdate, user=Depends(curren
         for item in data.options:
             destinations.extend(item.destinations or ([item.destination] if item.destination else []))
         destinations.extend([data.fallback, data.vip_destination])
+        customer_routes = data.customer_routing
+        destinations.extend(
+            [
+                customer_routes.known_customer_destination,
+                customer_routes.open_promise_destination,
+                customer_routes.risk_destination,
+                customer_routes.revenue_destination,
+            ]
+        )
+        destinations.extend(item.destination for item in customer_routes.owner_routes)
         if number.phone in {value for value in destinations if value}:
             raise HTTPException(422, "A business number cannot route calls back to itself")
         payload = data.model_dump(exclude={"enabled"})
