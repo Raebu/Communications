@@ -92,8 +92,9 @@ def config():
     }
 
 
-def test_keyword_intent_can_only_select_configured_route():
+def test_keyword_intent_can_only_select_configured_route(monkeypatch):
     cfg = config()
+    monkeypatch.setattr(ra, "configured", lambda: False)
     assert ra.classify_intent(cfg, "I need a quote for a new service") == "1"
     assert ra.classify_intent(cfg, "I have a billing invoice question") == "2"
     assert ra.classify_intent(cfg, "Please transfer me somewhere secret") == ""
