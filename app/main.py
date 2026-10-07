@@ -52,6 +52,7 @@ from .operations import router as operations_router
 from .quality import router as quality_router
 from .knowledge_import import router as knowledge_import_router
 from .outbound_hooks import router as outbound_hooks_router
+from .number_management import router as number_management_router
 from .models import Call, CustomerEvent, QueueTicket, RecoveryJob, WorkerHeartbeat, Audit, Base, EmailJob, DB, Event, Message, Number, Order, Session, Suppression, Tenant, User, engine, now
 from .providers import create_subaccount, parent_client, tenant_client
 from .security import csrf, current_user, decrypt, encrypt, hash_password, rate_limit, verify_password, verify_totp
@@ -86,6 +87,7 @@ app.include_router(operations_router)
 app.include_router(quality_router)
 app.include_router(knowledge_import_router)
 app.include_router(outbound_hooks_router)
+app.include_router(number_management_router)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
