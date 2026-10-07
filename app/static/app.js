@@ -92,8 +92,8 @@ async function loadMessages() {
 $('#send-form').onsubmit = e => { e.preventDefault(); act(async () => { const data=fields(e.target); data.consent_confirmed=Boolean(data.consent_confirmed); data.request_key=crypto.randomUUID();data.channel=selected?.channel||"sms"; await api('/api/messages','POST',data); selected={number_id:data.number_id,peer:data.peer,channel:data.channel}; e.target.elements.body.value=''; await loadThreads(); await loadMessages(); notice('Message queued for delivery.'); }); };
 async function loadAdmin() {
   const tenants=await api('/api/admin/tenants'); $('#admin-customers').replaceChildren();
-  for (const t of tenants) { const card=element('article',undefined,'customer'); card.append(element('h2',t.name),element('p',`${t.legal_name} · ${t.address} · ${t.status} · billing ${t.billing_status}`)); if (!t.connected) card.append(button('Connect Twilio subaccount',async()=>{await api(`/api/admin/tenants/${t.id}/connect`,'POST');await loadAdmin();}));
-    const form=element('form'); const bundle=element('input'); bundle.placeholder='Approved BU bundle SID'; bundle.required=true; const address=element('input'); address.placeholder='AD address SID (where required)'; const type=element('select'); for (const v of ['Local','Mobile','TollFree']) type.append(element('option',v)); const submit=element('button','Verify bundle and approve'); submit.type='submit'; form.append(bundle,address,type,submit); form.onsubmit=e=>{e.preventDefault();act(async()=>{await api(`/api/admin/tenants/${t.id}/approve`,'POST',{bundle_sid:bundle.value,address_sid:address.value,type:type.value});await loadAdmin();});}; card.append(form); $('#admin-customers').append(card); }
+  for (const t of tenants) { const card=element('article',undefined,'customer'); card.append(element('h2',t.name),element('p',`${t.legal_name} · ${t.address} · ${t.status} · billing ${t.billing_status}`)); if (!t.connected) card.append(button('Connect telephone service',async()=>{await api(`/api/admin/tenants/${t.id}/connect`,'POST');await loadAdmin();}));
+    const form=element('form'); const bundle=element('input'); bundle.placeholder='Approved application reference'; bundle.required=true; const address=element('input'); address.placeholder='Approved address reference (if required)'; const type=element('select'); for (const v of ['Local','Mobile','TollFree']) type.append(element('option',v)); const submit=element('button','Confirm approval'); submit.type='submit'; form.append(bundle,address,type,submit); form.onsubmit=e=>{e.preventDefault();act(async()=>{await api(`/api/admin/tenants/${t.id}/approve`,'POST',{bundle_sid:bundle.value,address_sid:address.value,type:type.value});await loadAdmin();});}; card.append(form); $('#admin-customers').append(card); }
 }
 if (!new URLSearchParams(location.search).get('token')) api('/api/me').then(load).catch(()=>{});
 setInterval(()=>{if(me&&!$('#inbox').hidden)act(async()=>{await loadThreads();await loadMessages();});},15000);
@@ -139,7 +139,7 @@ api('/api/service').then(s=>{if(s.billing_email&&/^[^\s@]+@[^\s@]+$/.test(s.bill
 let lastInboundId, draftPoll;
 async function loadAI() {
   const p=await api('/api/ai/profile');
-  $('#ai-provider-status').textContent=p.configured?'AI provider configured.':'AI provider needs to be configured before activation.';
+  $('#ai-provider-status').textContent=p.configured?'AI service ready.':'AI service is not yet ready for activation.';
   for(const key of ['business_info','greeting','language']) $('#ai-form').elements[key].value=p[key];
   for(const key of ['enabled','voice_enabled','autonomous','paused']) $('#ai-form').elements[key].checked=p[key];
   await loadOperations();
@@ -228,9 +228,9 @@ async function loadCompanyVerification() {
     telephonePreflight.hidden = Boolean(value.telephone_authorized);
     telephoneStart.hidden = true;
     if (value.telephone_authorized && !telephoneComplete) {
-      $('#company-telephone-readiness').textContent = 'Telephone approval has started. Twilio is reviewing the regulatory bundle; this page will update automatically.';
+      $('#company-telephone-readiness').textContent = 'Telephone approval has started. We are reviewing your application; this page will update automatically.';
     } else if (!telephoneComplete) {
-      $('#company-telephone-readiness').textContent = 'Before anything is submitted, Raeburn Connect can check Twilio’s current UK requirements against your verified company data without creating a regulatory bundle.';
+      $('#company-telephone-readiness').textContent = 'Before anything is submitted, Raeburn Connect can check the current UK telephone requirements against your verified company details without submitting an application.';
     }
   }
 
@@ -260,8 +260,8 @@ $('#company-telephone-preflight').onclick = () => act(async () => {
     const result = await api('/api/company-verification/telephone-preflight', 'POST');
     telephonePreflightReady = Boolean(result.ready);
     $('#company-telephone-readiness').textContent =
-      'Ready for Twilio submission. Verified UK company data, registered address and director contact mobile satisfy the current ' +
-      result.number_type + ' business-number requirements. No regulatory bundle has been created yet.';
+      'Ready for telephone approval. Your verified company details, registered address and director contact mobile meet the current ' +
+      result.number_type + ' business-number requirements. Nothing has been submitted yet.';
     $('#company-telephone-start').hidden = !telephonePreflightReady;
   } finally {
     button.disabled = false;
@@ -279,9 +279,9 @@ $('#company-telephone-start').onclick = () => act(async () => {
     $('#company-telephone-readiness').textContent =
       result.status === 'approved'
         ? 'Telephone approval is complete.'
-        : 'Telephone approval has started. Twilio is reviewing the regulatory bundle; this page will update automatically.';
+        : 'Telephone approval has started. We are reviewing your application; this page will update automatically.';
     await loadCompanyVerification();
-    notice('Telephone approval started. Raeburn Connect will keep checking Twilio for the result.');
+    notice('Telephone approval started. Raeburn Connect will keep checking for the result.');
   } finally {
     button.disabled = false;
   }
@@ -331,13 +331,13 @@ $('#identity-handoff-cancel').onclick = closeIdentityHandoff;
 $('#identity-handoff-open').onclick = () => {
   if (!identityHandoffUrl) return;
   const target = new URL(identityHandoffUrl);
-  if (target.protocol !== 'https:' || target.hostname !== 'verify.stripe.com') return notice('Unexpected identity provider address');
+  if (target.protocol !== 'https:' || target.hostname !== 'verify.stripe.com') return notice('We could not open the secure identity check. Please try again.');
   location.assign(target.href);
 };
 $('#company-identity').onclick = ()=>act(async()=>{
   const result=await api('/api/company-verification/identity','POST');
   const target=new URL(result.url);
-  if(target.protocol!=='https:'||target.hostname!=='verify.stripe.com')throw Error('Unexpected identity provider address');
+  if(target.protocol!=='https:'||target.hostname!=='verify.stripe.com')throw Error('We could not open the secure identity check. Please try again.');
   if (mobileIdentityDevice()) {
     location.assign(target.href);
     return;

@@ -50,9 +50,9 @@ REASONS = {
     'registry_ineligible': 'The register does not show an eligible active UK limited company for automatic verification.',
     'authority_mismatch': 'The verified identity must match a current individual director, including birth month and year. An employee email alone cannot establish authority.',
     'provider_unavailable': 'A verification service is temporarily unavailable. We will retry automatically.',
-    'provider_requirements': 'The telephone provider needs information outside the supported automated requirements. Activation remains on hold.',
-    'provider_rejected': 'The telephone provider has not approved this application. Activation remains on hold.',
-    'provider_uncertain': 'The director identity provider returned an uncertain result. Your company checks remain verified and the identity step can be retried safely.',
+    'provider_requirements': 'We need some additional information before telephone approval can continue. Your account remains safe and no number will be activated yet.',
+    'provider_rejected': 'Your telephone application was not approved. Your account remains active, but a number cannot be activated yet.',
+    'provider_uncertain': 'We could not confirm the director identity result. Your company checks are still verified and you can safely retry the identity step.',
     'identity_configuration': 'The director identity service rejected the request before verification could start. Check the Stripe Identity API key permissions/configuration, then retry this step.',
 }
 
@@ -426,7 +426,7 @@ def identity(user=Depends(current_user)):
                 notify_state(db, proof)
                 detail = ('Director identity could not start because the Stripe Identity configuration or API-key permissions need attention.'
                           if definite_rejection else
-                          'Director identity returned an uncertain provider result. Your verified company checks are preserved and this step can be retried safely.')
+                          'We could not confirm the director identity result. Your verified company checks are preserved and this step can be retried safely.')
                 return JSONResponse(status_code=503, content={'detail': detail})
             proof.identity_session = session.id
         metadata = stripe_dict(session.metadata)
@@ -512,7 +512,7 @@ def mobile_identity_session(token):
     try:
         session = identity_client().v1.identity.verification_sessions.retrieve(session_id)
     except Exception:
-        raise HTTPException(503, 'The director identity provider is temporarily unavailable. Return to Raeburn Connect and try again.') from None
+        raise HTTPException(503, 'The secure identity service is temporarily unavailable. Return to Raeburn Connect and try again.') from None
 
     metadata = stripe_dict(session.metadata)
     if (metadata.get('tenant_id') != tenant_id or metadata.get('attempt') != attempt
@@ -627,10 +627,10 @@ def telephone_preflight(user=Depends(current_user)):
             return result
         except ValueError as error:
             code = str(error)
-            detail = REASONS.get(code, 'Twilio live requirements are not ready for automatic submission.')
+            detail = REASONS.get(code, 'We cannot start telephone approval automatically with the information currently available.')
             raise HTTPException(409, detail) from None
         except Exception:
-            raise HTTPException(503, 'Twilio telephone approval preflight is temporarily unavailable.') from None
+            raise HTTPException(503, 'We cannot check telephone approval right now. Please try again shortly.') from None
 
 
 @router.post('/telephone-start', dependencies=[Depends(csrf)])
@@ -650,10 +650,10 @@ def telephone_start(user=Depends(current_user)):
             result = preflight(tenant, proof, company)
         except ValueError as error:
             code = str(error)
-            detail = REASONS.get(code, 'Twilio live requirements are not ready for automatic submission.')
+            detail = REASONS.get(code, 'We cannot start telephone approval automatically with the information currently available.')
             raise HTTPException(409, detail) from None
         except Exception:
-            raise HTTPException(503, 'Twilio telephone approval preflight is temporarily unavailable.') from None
+            raise HTTPException(503, 'We cannot check telephone approval right now. Please try again shortly.') from None
 
     with DB.begin() as db:
         tenant = db.scalar(select(Tenant).where(Tenant.id == user.tenant_id).with_for_update())
