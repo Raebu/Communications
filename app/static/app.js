@@ -225,12 +225,12 @@ async function loadCompanyVerification() {
   if (telephonePanel) {
     const telephoneComplete = value.telephone_status === 'approved';
     telephonePanel.hidden = !checks.director_authority || telephoneComplete;
-    telephonePreflight.hidden = Boolean(value.telephone_authorized);
+    telephonePreflight.hidden = true;
     telephoneStart.hidden = true;
-    if (value.telephone_authorized && !telephoneComplete) {
-      $('#company-telephone-readiness').textContent = 'Telephone approval has started. We are reviewing your application; this page will update automatically.';
-    } else if (!telephoneComplete) {
-      $('#company-telephone-readiness').textContent = 'Before anything is submitted, Raeburn Connect can check the current UK telephone requirements against your verified company details without submitting an application.';
+    if (!telephoneComplete) {
+      $('#company-telephone-readiness').textContent = value.telephone_authorized
+        ? 'Telephone approval has started automatically. We are reviewing your application; this page will update automatically. Most applications are reviewed within 1 business day, although some can take up to 3 business days.'
+        : 'Telephone approval will start automatically. Most applications are reviewed within 1 business day, although some can take up to 3 business days.';
     }
   }
 
@@ -281,7 +281,7 @@ $('#company-telephone-start').onclick = () => act(async () => {
         ? 'Telephone approval is complete.'
         : 'Telephone approval has started. We are reviewing your application; this page will update automatically.';
     await loadCompanyVerification();
-    notice('Telephone approval started. Raeburn Connect will keep checking for the result.');
+    notice('Telephone approval started. Most applications are reviewed within 1 business day, although some can take up to 3 business days.');
   } finally {
     button.disabled = false;
   }
