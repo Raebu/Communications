@@ -20,7 +20,6 @@ from .call_routing import (
     routing_for,
     routing_settings_for,
     menu_xml,
-    dial_xml,
     dial_group_xml,
     unavailable_xml,
     selected_option,
