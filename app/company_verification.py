@@ -362,6 +362,15 @@ def consume_daily_budget(db, prefix, maximum):
     budget.count += 1
 
 
+def stripe_dict(value):
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    converter = getattr(value, 'to_dict_recursive', None) or getattr(value, 'to_dict', None)
+    return converter() if converter else dict(value)
+
+
 def identity_client():
     if not settings.identity_key:
         raise HTTPException(503, 'Director identity verification is being configured')
@@ -393,8 +402,9 @@ def identity(user=Depends(current_user)):
             try:
                 # Reconcile a process crash after remote creation before local commit.
                 sessions = api.v1.identity.verification_sessions.list({'limit': 100})
-                candidates = [item for item in sessions.data if item.metadata.get('attempt') == proof.attempt
-                              and item.metadata.get('tenant_id') == tenant.id]
+                candidates = [item for item in sessions.data
+                              if stripe_dict(item.metadata).get('attempt') == proof.attempt
+                              and stripe_dict(item.metadata).get('tenant_id') == tenant.id]
                 if len(candidates) > 1 or (sessions.has_more and not candidates):
                     raise ValueError('provider_uncertain')
                 session = candidates[0] if candidates else api.v1.identity.verification_sessions.create({
@@ -412,7 +422,8 @@ def identity(user=Depends(current_user)):
                           'Director identity returned an uncertain provider result. Your verified company checks are preserved and this step can be retried safely.')
                 return JSONResponse(status_code=503, content={'detail': detail})
             proof.identity_session = session.id
-        if (session.metadata.get('tenant_id') != tenant.id or session.metadata.get('attempt') != proof.attempt
+        metadata = stripe_dict(session.metadata)
+        if (metadata.get('tenant_id') != tenant.id or metadata.get('attempt') != proof.attempt
                 or (settings.environment == 'production' and not session.livemode)):
             proof.status, proof.reason = 'held', 'authority_mismatch'
             notify_state(db, proof)
@@ -483,7 +494,8 @@ def txt_matches(proof):
 
 
 def director_match(report, officers, dob):
-    doc, selfie = report.get('document') or {}, report.get('selfie') or {}
+    report = stripe_dict(report)
+    doc, selfie = stripe_dict(report.get('document')), stripe_dict(report.get('selfie'))
     if doc.get('status') != 'verified' or selfie.get('status') != 'verified':
         return False
     dob = dob or {}
@@ -507,19 +519,24 @@ def reconcile_identity(proof, officers):
     session = api.v1.identity.verification_sessions.retrieve(
         proof.identity_session, {'expand': ['verified_outputs.dob']})
     expected_live = settings.environment == 'production'
-    if (session.metadata.get('tenant_id') != proof.tenant_id or session.metadata.get('attempt') != proof.attempt
+    metadata = stripe_dict(session.metadata)
+    options = stripe_dict(session.options)
+    document_options = stripe_dict(options.get('document'))
+    if (metadata.get('tenant_id') != proof.tenant_id or metadata.get('attempt') != proof.attempt
             or (expected_live and not session.livemode) or session.type != 'document'
-            or not session.options.get('document', {}).get('require_matching_selfie')
-            or not session.options.get('document', {}).get('require_live_capture')):
+            or not document_options.get('require_matching_selfie')
+            or not document_options.get('require_live_capture')):
         raise ValueError('authority_mismatch')
     if session.status != 'verified':
         return False
     if not session.last_verification_report:
         raise ValueError('authority_mismatch')
     report = api.v1.identity.verification_reports.retrieve(session.last_verification_report)
+    report = stripe_dict(report)
     if report.get('verification_session') != proof.identity_session or (expected_live and not report.get('livemode')):
         raise ValueError('authority_mismatch')
-    if not director_match(report, officers, (session.verified_outputs or {}).get('dob')):
+    verified_outputs = stripe_dict(session.verified_outputs)
+    if not director_match(report, officers, stripe_dict(verified_outputs.get('dob'))):
         raise ValueError('authority_mismatch')
     # Only retain contact names needed by the telecom provider, encrypted.
     contact = decrypt(proof.encrypted_contact)

@@ -388,6 +388,46 @@ def test_identity_creation_is_bound_capped_and_reused(configured, monkeypatch):
     assert call.args[1]["idempotency_key"].endswith(attempt)
 
 
+def test_stripe_object_metadata_and_options_are_supported(configured, monkeypatch):
+    class StripeLike:
+        def __init__(self, **values):
+            self.__dict__.update(values)
+        def to_dict_recursive(self):
+            def conv(value):
+                if isinstance(value, StripeLike):
+                    return {k: conv(v) for k, v in value.__dict__.items()}
+                if isinstance(value, list):
+                    return [conv(v) for v in value]
+                return value
+            return {k: conv(v) for k, v in self.__dict__.items()}
+
+    c, tid = applicant()
+    ready_for_identity(c, tid)
+    with DB() as db:
+        proof = db.get(CompanyVerification, tid)
+        attempt = proof.attempt
+
+    session = StripeLike(
+        id="vs_live_test",
+        metadata=StripeLike(attempt=attempt, tenant_id=tid),
+        livemode=True,
+        status="requires_input",
+        url="https://verify.stripe.com/test",
+        type="document",
+        options=StripeLike(document=StripeLike(require_matching_selfie=True, require_live_capture=True)),
+        verified_outputs=StripeLike(dob=StripeLike(month=4, year=1980)),
+        last_verification_report=None,
+    )
+    api = MagicMock()
+    api.v1.identity.verification_sessions.list.return_value = NS(data=[session], has_more=False)
+    api.v1.identity.verification_sessions.retrieve.return_value = session
+    monkeypatch.setattr(cv, "identity_client", lambda: api)
+
+    response = c.post("/api/company-verification/identity", headers=HEADERS)
+    assert response.status_code == 200
+    assert response.json()["url"] == "https://verify.stripe.com/test"
+
+
 def test_ambiguous_identity_creation_preserves_checks_and_is_retryable(configured, monkeypatch):
     c, tid = applicant()
     ready_for_identity(c, tid)
