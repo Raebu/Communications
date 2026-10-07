@@ -11,6 +11,7 @@ class Settings:
     twilio_sid: str = os.getenv("TWILIO_ACCOUNT_SID", "")
     twilio_token: str = os.getenv("TWILIO_AUTH_TOKEN", "")
     stripe_key: str = os.getenv("STRIPE_SECRET_KEY", "")
+    stripe_publishable_key: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
     stripe_webhook_secret: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
     business_price: str = os.getenv("STRIPE_PRICE_BUSINESS", "")
     connect_price: str = os.getenv("STRIPE_PRICE_CONNECT", "")
