@@ -61,7 +61,9 @@ async function load() {
   }
   renderNumbers();
   if (me.email_verified) { const usage = await api('/api/usage'); $('#usage-summary').textContent = `${usage.sms_segments}/${usage.sms_allowance} SMS segments · ${usage.voice_minutes}/${usage.voice_allowance} call minutes this month`; }
-  try { await loadOrders(); } catch(error) { notice(error.message); } show(me.email_verified ? 'overview' : 'account');
+  try { await loadOrders(); } catch(error) { notice(error.message); }
+  try { await loadCustomerOS(); } catch(error) { notice(error.message); }
+  show(me.email_verified ? 'overview' : 'account');
 }
 $('#edit-profile').onclick = () => { $('#profile-review').hidden = true; $('#profile-form').hidden = false; $('#profile-form').elements.legal_name.focus(); };
 $('#profile-form').onsubmit = e => { e.preventDefault(); act(async () => { await api('/api/profile', 'PUT', fields(e.target)); await load(); show('account'); notice('Thank you — we’ve received your company details. Your activation is now pending review.'); }); };
@@ -85,6 +87,68 @@ $('#search-form').onsubmit = e => { e.preventDefault(); act(async () => {
   }
   if (!results.length) notice('No available numbers match these digits.');
 }); };
+async function loadCustomerOS() {
+  const brief = await api('/api/customer-os/executive-brief');
+  $('#executive-brief-summary').textContent = brief.summary;
+  $('#brief-interactions').textContent = brief.interactions_24h;
+  $('#brief-promises').textContent = brief.open_promises + (brief.overdue_promises ? ' · ' + brief.overdue_promises + ' overdue' : '');
+  $('#brief-recoveries').textContent = brief.open_recoveries;
+  $('#brief-risk').textContent = brief.customers_at_risk;
+  $('#brief-revenue').textContent = '£' + (brief.potential_revenue / 100).toFixed(2);
+
+  const recoveries = await api('/api/customer-os/recovery');
+  $('#recovery-list').replaceChildren();
+  for (const item of recoveries) {
+    const card = element('article', undefined, 'owned');
+    const detail = item.detail || {};
+    const title = item.kind === 'missed_call'
+      ? 'Missed call' + (detail.from ? ' from ' + detail.from : '')
+      : item.kind === 'promise_overdue'
+        ? 'Promise overdue'
+        : item.kind === 'guarantee'
+          ? 'Service promise needs attention'
+          : item.kind.replaceAll('_', ' ');
+    const due = new Date(item.due_at).toLocaleString();
+    card.append(
+      element('h3', title),
+      element('p', 'Due ' + due),
+      button('Mark resolved', async () => {
+        await api('/api/customer-os/recovery/' + item.id + '/resolve', 'POST');
+        await loadCustomerOS();
+        notice('Recovery item resolved.');
+      }, true)
+    );
+    $('#recovery-list').append(card);
+  }
+  if (!recoveries.length) $('#recovery-list').append(element('p', 'Nothing needs recovery right now.'));
+
+  const guarantees = await api('/api/customer-os/guarantees');
+  $('#guarantee-list').replaceChildren();
+  for (const rule of guarantees) {
+    const card = element('article', undefined, 'owned');
+    card.append(
+      element('h3', rule.name),
+      element('p', 'Target: ' + rule.max_minutes + ' minutes · ' + rule.action.replaceAll('_', ' '))
+    );
+    $('#guarantee-list').append(card);
+  }
+  if (!guarantees.length) $('#guarantee-list').append(element('p', 'No service promises configured yet.'));
+}
+
+$('#guarantee-form').onsubmit = e => {
+  e.preventDefault();
+  act(async () => {
+    const data = fields(e.target);
+    data.max_minutes = Number(data.max_minutes);
+    data.enabled = true;
+    await api('/api/customer-os/guarantees', 'POST', data);
+    e.target.reset();
+    e.target.elements.max_minutes.value = 10;
+    await loadCustomerOS();
+    notice('Service promise added. Raeburn will now track it automatically.');
+  });
+};
+
 function renderNumbers() {
   $('#owned-numbers').replaceChildren(); $('#send-number').replaceChildren();
   for (const n of owned) {
