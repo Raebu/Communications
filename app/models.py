@@ -119,6 +119,15 @@ class Number(Base):
     forwarding: Mapped[str] = mapped_column(String(20), default="")
 
 
+class CallRouting(Base):
+    __tablename__ = "call_routing"
+    number_id: Mapped[str] = mapped_column(ForeignKey("numbers.id"), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    encrypted_config: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
 class Order(Base):
     __tablename__ = "orders"
     __table_args__ = (UniqueConstraint("tenant_id", "request_key"),)
