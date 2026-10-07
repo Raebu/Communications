@@ -266,7 +266,7 @@ def menu_xml(config, action_url, prefix=""):
     )
 
 
-def dial_group_xml(destinations, minutes, action_url, timeout, whisper_url=""):
+def dial_group_xml(destinations, minutes, action_url, timeout, whisper_url="", sequential=False):
     numbers = "".join(
         '<Number'
         + (' url="' + escape(whisper_url, {'"': "&quot;"}) + '" method="POST"' if whisper_url else "")
@@ -278,6 +278,7 @@ def dial_group_xml(destinations, minutes, action_url, timeout, whisper_url=""):
     return (
         '<Response><Dial timeout="'
         + str(timeout)
+        + ('" sequential="true' if sequential else '')
         + '" timeLimit="'
         + str(max(1, minutes) * 60)
         + '" action="'
@@ -289,7 +290,7 @@ def dial_group_xml(destinations, minutes, action_url, timeout, whisper_url=""):
 
 
 def dial_xml(destination, minutes, action_url, timeout, whisper_url=""):
-    return dial_group_xml([destination], minutes, action_url, timeout, whisper_url)
+    return dial_group_xml([destination], minutes, action_url, timeout, whisper_url, False)
 
 
 def voicemail_xml(config, action_url, status_url):
