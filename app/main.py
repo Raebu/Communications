@@ -28,6 +28,11 @@ from .call_routing import (
     voicemail_xml,
     callback_xml,
     whisper_xml,
+    queue_name,
+    enqueue_xml,
+    queue_wait_xml,
+    queue_agent_xml,
+    leave_queue_xml,
 )
 from .customer_os import (
     router as customer_os_router,
@@ -46,7 +51,7 @@ from .operations import router as operations_router
 from .quality import router as quality_router
 from .knowledge_import import router as knowledge_import_router
 from .outbound_hooks import router as outbound_hooks_router
-from .models import Call, CustomerEvent, RecoveryJob, WorkerHeartbeat, Audit, Base, EmailJob, DB, Event, Message, Number, Order, Session, Suppression, Tenant, User, engine, now
+from .models import Call, CustomerEvent, QueueTicket, RecoveryJob, WorkerHeartbeat, Audit, Base, EmailJob, DB, Event, Message, Number, Order, Session, Suppression, Tenant, User, engine, now
 from .providers import create_subaccount, parent_client, tenant_client
 from .security import csrf, current_user, decrypt, encrypt, hash_password, rate_limit, verify_password, verify_totp
 from .worker import within_budget
@@ -916,6 +921,76 @@ def _human_media_options(db, tenant, number, call):
     }
 
 
+def _queue_entry_xml(db, tenant, number, call, route, option):
+    event = _call_event(db, tenant.id, call.sid)
+    detail = _call_detail(event)
+    members = ordered_members(db, tenant.id, option)
+    queue = queue_name(tenant.id, number.id, option.get("digit", "q"))
+    ticket = db.scalar(
+        select(QueueTicket).where(
+            QueueTicket.tenant_id == tenant.id,
+            QueueTicket.call_sid == call.sid,
+        ).with_for_update()
+    )
+    if not ticket:
+        ticket = QueueTicket(
+            tenant_id=tenant.id,
+            number_id=number.id,
+            call_sid=call.sid,
+            customer_id=event.customer_id if event else None,
+            queue_name=queue,
+            status="waiting",
+            encrypted_payload=encrypt(
+                {
+                    "members": members,
+                    "attempted": [],
+                    "strategy": option.get("strategy", "simultaneous"),
+                    "callback_enabled": bool(option.get("queue_callback_enabled", True)),
+                    "caller": detail.get("from", ""),
+                    "label": option.get("label", "team"),
+                    "digit": option.get("digit", ""),
+                    "resume_status": "waiting",
+                }
+            ),
+        )
+        db.add(ticket)
+        db.flush()
+        record_event(
+            db,
+            tenant.id,
+            "call.queued",
+            "voice",
+            call.sid + ":queue",
+            event.customer_id if event else None,
+            {"call_sid": call.sid, "queue": queue, "label": option.get("label", "")},
+        )
+    call.status = "queued"
+    announcement = ""
+    settings_for_number = routing_settings_for(db, number) or {}
+    if settings_for_number.get("record_answered_calls") and not _call_has_event(
+        db, tenant.id, call.sid, "call.recording.disclosed"
+    ):
+        announcement = settings_for_number.get(
+            "recording_announcement",
+            "This call may be recorded for service and quality purposes.",
+        )
+        record_event(
+            db,
+            tenant.id,
+            "call.recording.disclosed",
+            "voice",
+            call.sid + ":recording-disclosure",
+            event.customer_id if event else None,
+            {"call_sid": call.sid},
+        )
+    return enqueue_xml(
+        queue,
+        settings.public_url + "/webhooks/twilio/queue-wait?ticket=" + ticket.id,
+        settings.public_url + "/webhooks/twilio/queue-result?ticket=" + ticket.id,
+        announcement,
+    )
+
+
 def _human_dial_xml(
     db,
     tenant,
@@ -1136,7 +1211,9 @@ async def voice_menu(request: Request):
             except HTTPException:
                 digit = ""
         option = selected_option(route, digit)
-        if option and option.get("action") == "dial":
+        if option and option.get("action") == "queue":
+            xml = _queue_entry_xml(db, t, n, call, route, option)
+        elif option and option.get("action") == "dial":
             members = ordered_members(db, t.id, option)
             call.destination = members[0]
             call.status = "routing"
