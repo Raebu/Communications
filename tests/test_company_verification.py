@@ -388,18 +388,47 @@ def test_identity_creation_is_bound_capped_and_reused(configured, monkeypatch):
     assert call.args[1]["idempotency_key"].endswith(attempt)
 
 
-def test_ambiguous_identity_creation_is_not_repeated(configured, monkeypatch):
+def test_ambiguous_identity_creation_preserves_checks_and_is_retryable(configured, monkeypatch):
     c, tid = applicant()
     ready_for_identity(c, tid)
     api = MagicMock()
     api.v1.identity.verification_sessions.list.return_value = NS(data=[], has_more=False)
     api.v1.identity.verification_sessions.create.side_effect = TimeoutError("private detail")
     monkeypatch.setattr(cv, "identity_client", lambda: api)
+
     assert c.post("/api/company-verification/identity", headers=HEADERS).status_code == 503
-    assert c.post("/api/company-verification/identity", headers=HEADERS).status_code == 409
-    assert api.v1.identity.verification_sessions.create.call_count == 1
+    status = c.get("/api/company-verification").json()
+    assert status["checks"] == {
+        "business_email": True,
+        "dns": True,
+        "company_register": True,
+        "director_authority": False,
+    }
+    assert status["stage"] == 4
+    assert status["identity_retry"] is True
+    assert status["identity_ready"] is True
+    assert status["reason"] == "provider_uncertain"
+
+    # Retrying is allowed and uses the same attempt/idempotency key.
+    assert c.post("/api/company-verification/identity", headers=HEADERS).status_code == 503
+    assert api.v1.identity.verification_sessions.create.call_count == 2
     with DB() as db:
-        assert db.get(CompanyVerification, tid).reason == "provider_uncertain"
+        proof = db.get(CompanyVerification, tid)
+        assert proof.reason == "provider_uncertain"
+        assert proof.email_verified and proof.dns_verified and proof.registry_verified
+
+
+def test_identity_configuration_rejection_is_distinct_and_retryable(configured, monkeypatch):
+    c, tid = applicant()
+    ready_for_identity(c, tid)
+    api = MagicMock()
+    api.v1.identity.verification_sessions.list.side_effect = type("PermissionError", (Exception,), {})("denied")
+    monkeypatch.setattr(cv, "identity_client", lambda: api)
+    assert c.post("/api/company-verification/identity", headers=HEADERS).status_code == 503
+    status = c.get("/api/company-verification").json()
+    assert status["reason"] == "identity_configuration"
+    assert status["identity_retry"] is True
+    assert status["stage"] == 4
 
 
 def test_business_email_is_sent_once_per_attempt(configured):
