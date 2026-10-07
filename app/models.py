@@ -382,6 +382,29 @@ class Customer(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class IntelligenceProfile(Base):
+    __tablename__ = "intelligence_profiles"
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    analyse_voicemail: Mapped[bool] = mapped_column(Boolean, default=False)
+    analyse_messages: Mapped[bool] = mapped_column(Boolean, default=False)
+    retention_days: Mapped[int] = mapped_column(Integer, default=90)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class IntelligenceJob(Base):
+    __tablename__ = "intelligence_jobs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    event_id: Mapped[str] = mapped_column(ForeignKey("customer_events.id"), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    result: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str] = mapped_column(String(80), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class CustomerState(Base):
     __tablename__ = "customer_states"
     customer_id: Mapped[str] = mapped_column(ForeignKey("customers.id"), primary_key=True)
