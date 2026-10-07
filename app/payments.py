@@ -145,6 +145,24 @@ def checkout(db, t, job, payload):
     )
     db.add(request)
     db.flush()
+    conversation = db.get(Conversation, job.conversation_id)
+    if conversation and conversation.customer_id:
+        from .customer_os import record_event
+        record_event(
+            db,
+            t.id,
+            "payment.requested",
+            conversation.channel,
+            request.id,
+            conversation.customer_id,
+            {
+                "payment_id": request.id,
+                "catalog_id": item.id,
+                "amount": request.amount,
+                "currency": request.currency,
+                "status": request.status,
+            },
+        )
     return {"payment_id": request.id, "url": request.url, "status": "open"}
 
 
@@ -192,6 +210,23 @@ def process_webhook(integration_id, raw, signature):
                 pay.status = "paid"
                 j = db.get(ActionJob, pay.action_id)
                 c = db.get(Conversation, j.conversation_id)
+                if c and c.customer_id:
+                    from .customer_os import record_event
+                    record_event(
+                        db,
+                        t.id,
+                        "payment.paid",
+                        c.channel,
+                        pay.id + ":paid",
+                        c.customer_id,
+                        {
+                            "payment_id": pay.id,
+                            "catalog_id": item.id,
+                            "amount": pay.amount,
+                            "currency": pay.currency,
+                            "status": "paid",
+                        },
+                    )
                 if c.channel != "voice":
                     from .autonomy import queue_reply
 
@@ -203,7 +238,26 @@ def process_webhook(integration_id, raw, signature):
                     except RuntimeError:
                         db.add(Audit(tenant_id=t.id, actor="stripe", action="payment.receipt.blocked", detail=pay.id))
         elif session["status"] == "expired" and pay.status != "paid":
-            pay.status = "expired"
+            if pay.status != "expired":
+                pay.status = "expired"
+                j = db.get(ActionJob, pay.action_id)
+                c = db.get(Conversation, j.conversation_id) if j else None
+                if c and c.customer_id:
+                    from .customer_os import record_event
+                    record_event(
+                        db,
+                        t.id,
+                        "payment.expired",
+                        c.channel,
+                        pay.id + ":expired",
+                        c.customer_id,
+                        {
+                            "payment_id": pay.id,
+                            "amount": pay.amount,
+                            "currency": pay.currency,
+                            "status": "expired",
+                        },
+                    )
         db.add(Event(id=event["id"], tenant_id=t.id, kind=event["type"]))
         db.add(Audit(tenant_id=t.id, actor="stripe", action="payment.reconciled", detail=pay.id + ":" + pay.status))
     return {"received": True}

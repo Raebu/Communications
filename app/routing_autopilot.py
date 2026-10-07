@@ -87,6 +87,13 @@ def _phone_set(config):
         if option.get("destination"):
             values.add(option["destination"])
         values.update(value for value in option.get("destinations", []) if value)
+    customer_routing = (config or {}).get("customer_routing") or {}
+    for key in ("known_customer_destination", "open_promise_destination", "risk_destination", "revenue_destination"):
+        if customer_routing.get(key):
+            values.add(customer_routing[key])
+    for item in customer_routing.get("owner_routes") or []:
+        if item.get("destination"):
+            values.add(item["destination"])
     return values
 
 
@@ -117,6 +124,16 @@ def _default_current(db, number):
         "emergency_mode": "normal",
         "never_miss": ["fallback", "ai", "callback"],
         "vip_destination": "",
+        "customer_routing": {
+            "enabled": False,
+            "owner_routes": [],
+            "known_customer_destination": "",
+            "open_promise_destination": "",
+            "risk_destination": "",
+            "risk_threshold": 70,
+            "revenue_destination": "",
+            "revenue_threshold": 100000,
+        },
         "whisper": True,
         "intent_first": False,
         "intent_prompt": "Tell me briefly what you are calling about, or use the keypad.",
@@ -153,7 +170,10 @@ def draft(number_id: str, data: DraftRequest, user=Depends(current_user)):
         "business_hours:{enabled:boolean,timezone:string,weekdays:[integer],opens:HH:MM,closes:HH:MM,"
         "holidays:[YYYY-MM-DD],after_hours:fallback|ai|callback|voicemail},"
         "emergency_mode:normal|closed|fallback|ai|callback|voicemail,"
-        "never_miss:[fallback|ai|callback|voicemail],vip_destination:string,whisper:boolean,"
+        "never_miss:[fallback|ai|callback|voicemail],vip_destination:string,"
+        "customer_routing:{enabled:boolean,owner_routes:[{owner:string,destination:string}],"
+        "known_customer_destination:string,open_promise_destination:string,risk_destination:string,"
+        "risk_threshold:integer,revenue_destination:string,revenue_threshold:integer},whisper:boolean,"
         "intent_first:boolean,intent_prompt:string,voicemail_greeting:string,"
         "transcribe_voicemail:boolean,record_answered_calls:boolean,"
         "transcribe_answered_calls:boolean,recording_retention_days:integer,"

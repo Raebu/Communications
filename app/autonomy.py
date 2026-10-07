@@ -416,6 +416,21 @@ def perform_booking(db, t, c, payload, key):
             provider.close()
     db.add(b)
     db.flush()
+    from .customer_os import record_event
+    record_event(
+        db,
+        t.id,
+        "booking.confirmed",
+        c.channel,
+        b.id,
+        c.customer_id,
+        {
+            "booking_id": b.id,
+            "department_id": b.department_id,
+            "starts_at": b.starts_at.isoformat(),
+            "ends_at": b.ends_at.isoformat(),
+        },
+    )
     return b
 
 
@@ -474,6 +489,16 @@ def action_one(job_id=None):
                         finally:
                             provider.close()
                     b.status = "cancelled"
+                    from .customer_os import record_event
+                    record_event(
+                        db,
+                        t.id,
+                        "booking.cancelled",
+                        c.channel,
+                        b.id + ":cancelled",
+                        c.customer_id or b.customer_id,
+                        {"booking_id": b.id, "starts_at": b.starts_at.isoformat()},
+                    )
                 else:
                     d = db.scalar(
                         select(Department).where(Department.id == b.department_id, Department.tenant_id == t.id).with_for_update()
@@ -489,7 +514,22 @@ def action_one(job_id=None):
                             provider.move(b.provider_id, proposed_start, proposed_end)
                         finally:
                             provider.close()
+                    previous_start = b.starts_at
                     b.starts_at, b.ends_at = proposed_start, proposed_end
+                    from .customer_os import record_event
+                    record_event(
+                        db,
+                        t.id,
+                        "booking.rescheduled",
+                        c.channel,
+                        b.id + ":rescheduled:" + proposed_start.isoformat(),
+                        c.customer_id or b.customer_id,
+                        {
+                            "booking_id": b.id,
+                            "previous_starts_at": previous_start.isoformat(),
+                            "starts_at": b.starts_at.isoformat(),
+                        },
+                    )
                 receipt = {"booking_id": b.id, "starts_at": b.starts_at.isoformat(), "status": b.status}
             elif j.kind == "paymentlink":
                 from .payments import checkout
@@ -502,6 +542,17 @@ def action_one(job_id=None):
                     db.add(lead)
                     db.flush()
                 receipt = {"lead_id": lead.id}
+                if c.customer_id:
+                    from .customer_os import record_event
+                    record_event(
+                        db,
+                        t.id,
+                        "lead.captured",
+                        c.channel,
+                        lead.id,
+                        c.customer_id,
+                        {"lead_id": lead.id, "summary": lead.summary},
+                    )
             elif j.kind == "email":
                 if not settings.smtp_host or not settings.email_from:
                     raise RuntimeError("Email unavailable")
@@ -512,6 +563,17 @@ def action_one(job_id=None):
                 db.add(job)
                 db.flush()
                 receipt = {"email_job_id": job.id, "delivery": "queued"}
+                if c.customer_id:
+                    from .customer_os import record_event
+                    record_event(
+                        db,
+                        t.id,
+                        "email.queued",
+                        "email",
+                        job.id,
+                        c.customer_id,
+                        {"email_job_id": job.id, "recipient": payload["email"]},
+                    )
             else:
                 raise RuntimeError("Unknown action")
             j.status, j.receipt = "completed", json.dumps(receipt)
