@@ -293,24 +293,36 @@ def purchase(data: Purchase, user=Depends(current_user)):
                 if existing.phone != data.phone or existing.number_type != data.type:
                     raise HTTPException(409, "Idempotency key belongs to a different order")
                 return {"id": existing.id, "status": existing.status}
-            if t.status != "approved" or not t.bundle_sid or t.bundle_type != data.type:
-                raise HTTPException(409, "Telephone approval is required for this type of number")
+            require_company_verified(db, t)
             if t.billing_status != "active":
-                raise HTTPException(402, "Active paid subscription required")
-            if not t.twilio_sid:
-                raise HTTPException(409, "Communications account must be connected")
+                raise HTTPException(402, "Choose an active subscription before selecting your business number")
+            telephone_ready = t.status == "approved" and bool(t.bundle_sid) and t.bundle_type == data.type and bool(t.twilio_sid)
             if db.scalar(select(Number).where(Number.tenant_id == t.id)) or db.scalar(
-                select(Order).where(Order.tenant_id == t.id, Order.status.in_(["queued", "processing", "review"]))
+                select(Order).where(Order.tenant_id == t.id, Order.status.in_(["awaiting_approval", "queued", "processing", "review"]))
             ):
                 winner = db.scalar(select(Order).where(Order.tenant_id == t.id, Order.request_key == data.request_key))
                 if winner and winner.phone == data.phone and winner.number_type == data.type:
                     return {"id": winner.id, "status": winner.status}
                 raise HTTPException(409, "One number per subscription; contact support for additional numbers")
-            order = Order(tenant_id=t.id, phone=data.phone, number_type=data.type, request_key=data.request_key)
+            order = Order(
+                tenant_id=t.id,
+                phone=data.phone,
+                number_type=data.type,
+                request_key=data.request_key,
+                status="queued" if telephone_ready else "awaiting_approval",
+            )
             db.add(order)
             db.flush()
             audit(db, user, "number.order.created", order.id)
-            return {"id": order.id, "status": order.status}
+            return {
+                "id": order.id,
+                "status": order.status,
+                "message": (
+                    "Your number activation has been queued."
+                    if telephone_ready
+                    else "Your preferred number has been saved and will be requested automatically after telephone approval. Availability cannot be guaranteed until activation."
+                ),
+            }
     except IntegrityError:
         with DB() as db:
             existing = db.scalar(select(Order).where(Order.tenant_id == user.tenant_id, Order.request_key == data.request_key))
@@ -346,8 +358,6 @@ def checkout(data: Checkout, user=Depends(current_user)):
         require_company_verified(db, t)
         if t.billing_status == "active":
             raise HTTPException(409, "Manage your existing subscription in billing portal")
-        if t.status != "approved":
-            raise HTTPException(409, "Complete regulatory review before subscribing")
         if t.checkout_sid:
             prior = stripe_client.v1.checkout.sessions.retrieve(t.checkout_sid)
             if prior.status == "open":

@@ -1,5 +1,5 @@
 const $ = s => document.querySelector(s);
-let me, owned = [], selected, registering = false;
+let me, owned = [], selected, registering = false, companyVerificationState = null;
 const notice = message => { $('#notice').textContent = message; };
 function element(tag, text, className) { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (className) e.className = className; return e; }
 async function api(path, method = 'GET', data) {
@@ -20,14 +20,35 @@ async function load() {
   me = await api('/api/me'); owned = []; try { owned = await api('/api/numbers'); } catch(error) { notice(error.message); }
   $('#auth').hidden = true; $('#workspace').hidden = false; $('#logout').hidden = false; $('#admin-nav').hidden = !me.platform_admin;
   const submitted = Boolean(me.tenant.legal_name && me.tenant.address);
-  const pendingReview = submitted && me.tenant.status === 'pending';
-  const approved = me.tenant.status === 'approved';
-  $('#profile-review').hidden = !(pendingReview || approved);
-  $('#profile-form').hidden = pendingReview || approved;
-  $('#profile-review-title').textContent = approved ? 'Your company is approved' : 'Thank you — your company details are with us';
-  $('#profile-review-message').textContent = approved ? 'Your business review is complete. You can continue with your service subscription and number setup.' : 'Your activation is pending while we review your company details. Thank you for sending them — you can check your progress here, and update your details below if anything changes.';
-  $('#company').textContent = me.tenant.name; $('#review-status').textContent = approved ? 'Approved' : pendingReview ? 'Pending activation' : 'Details needed'; $('#billing-status').textContent = ({unpaid:'No active subscriptions',active:'Active subscription',past_due:'Payment needs attention',canceled:'Subscription ended',cancelled:'Subscription ended',pending:'Subscription processing',incomplete:'Subscription setup incomplete',trialing:'Trial subscription'})[me.tenant.billing_status] || 'No active subscriptions'; $('#number-count').textContent = owned.length;
-  $('#next-step').textContent = me.tenant.status !== 'approved' ? (pendingReview ? 'Thank you — your activation is pending while we review your company details. You can check your progress in account settings.' : 'Complete your legal business profile. Our team will review it and guide your number registration.') : me.tenant.billing_status !== 'active' ? 'Choose your subscription, then search for an available number.' : owned.length ? 'Set up call forwarding and start managing your conversations.' : 'Search for your UK number and submit an activation request.';
+  let verification = null;
+  try { verification = await loadCompanyVerification(); } catch(error) { notice(error.message); }
+  const checks = verification?.checks || {};
+  const raeburnVerified = Boolean(checks.business_email && checks.dns && checks.company_register && checks.director_authority && verification?.status === 'verified');
+  const telephoneApproved = me.tenant.status === 'approved';
+  const pendingReview = submitted && !raeburnVerified;
+  $('#profile-review').hidden = !(pendingReview || raeburnVerified);
+  $('#profile-form').hidden = pendingReview || raeburnVerified;
+  $('#profile-review-title').textContent = raeburnVerified ? 'Your company is verified' : 'Thank you — your company details are with us';
+  $('#profile-review-message').textContent = raeburnVerified
+    ? (telephoneApproved
+        ? 'Your business and telephone approval are complete. Your service can now be activated.'
+        : 'Your Raeburn verification is complete. Your workspace is ready while telephone approval continues automatically in the background.')
+    : 'We are verifying your company details. You can check progress here and complete any remaining verification steps.';
+  $('#company').textContent = me.tenant.name;
+  $('#review-status').textContent = telephoneApproved ? 'Telephone approved' : raeburnVerified ? 'Verified · telephone approval in progress' : pendingReview ? 'Verification in progress' : 'Details needed';
+  $('#billing-status').textContent = ({unpaid:'No active subscriptions',active:'Active subscription',past_due:'Payment needs attention',canceled:'Subscription ended',cancelled:'Subscription ended',pending:'Subscription processing',incomplete:'Subscription setup incomplete',trialing:'Trial subscription'})[me.tenant.billing_status] || 'No active subscriptions';
+  $('#number-count').textContent = owned.length;
+  $('#next-step').textContent = !raeburnVerified
+    ? 'Complete your company and director verification to unlock setup.'
+    : me.tenant.billing_status !== 'active'
+      ? (telephoneApproved
+          ? 'Choose your subscription, then select your UK business number.'
+          : 'Your workspace is ready. Choose your subscription and set up your service while telephone approval continues in the background.')
+      : owned.length
+        ? 'Set up call forwarding and start managing your conversations.'
+        : telephoneApproved
+          ? 'Search for your UK number and submit an activation request.'
+          : 'Choose your preferred UK number now. We will request it automatically as soon as telephone approval is complete.';
   for (const key of ['legal_name', 'address', 'registration_number']) $('#profile-form').elements[key].value = me.tenant[key] || '';
   $('#account-verification').textContent = `Email: ${me.email_verified ? 'verified' : 'verification required'} · Authenticator: ${me.mfa_enabled ? 'enabled' : 'not enabled'}`;
   $('#setup-mfa').hidden = me.mfa_enabled;
@@ -38,7 +59,6 @@ async function load() {
     $('#mfa-qr').replaceChildren();
     $('#mfa-form').reset();
   }
-  try { await loadCompanyVerification(); } catch(error) { notice(error.message); }
   renderNumbers();
   if (me.email_verified) { const usage = await api('/api/usage'); $('#usage-summary').textContent = `${usage.sms_segments}/${usage.sms_allowance} SMS segments · ${usage.voice_minutes}/${usage.voice_allowance} call minutes this month`; }
   try { await loadOrders(); } catch(error) { notice(error.message); } show(me.email_verified ? 'overview' : 'account');
@@ -47,7 +67,22 @@ $('#edit-profile').onclick = () => { $('#profile-review').hidden = true; $('#pro
 $('#profile-form').onsubmit = e => { e.preventDefault(); act(async () => { await api('/api/profile', 'PUT', fields(e.target)); await load(); show('account'); notice('Thank you — we’ve received your company details. Your activation is now pending review.'); }); };
 $('#search-form').onsubmit = e => { e.preventDefault(); act(async () => {
   const results = await api('/api/numbers/search?' + new URLSearchParams(fields(e.target))); $('#search-results').replaceChildren();
-  for (const n of results) { const card = element('article'); card.append(element('h2', n.phone), element('p', [n.voice && 'Voice', n.sms && 'SMS'].filter(Boolean).join(' · ') || 'No advertised capabilities'), button('Request activation', async () => { await api('/api/orders', 'POST', {phone:n.phone,type:n.type,request_key:crypto.randomUUID()}); await loadOrders(); notice('Activation requested. Follow its status below.'); })); $('#search-results').append(card); }
+  const telephoneApproved = me?.tenant?.status === 'approved';
+  for (const n of results) {
+    const card = element('article');
+    card.append(
+      element('h2', n.phone),
+      element('p', [n.voice && 'Voice', n.sms && 'SMS'].filter(Boolean).join(' · ') || 'Capabilities confirmed at activation'),
+      button(telephoneApproved ? 'Request activation' : 'Choose as preferred number', async () => {
+        const order = await api('/api/orders', 'POST', {phone:n.phone,type:n.type,request_key:crypto.randomUUID()});
+        await loadOrders();
+        notice(order.message || (telephoneApproved
+          ? 'Activation requested. Follow its status below.'
+          : 'Preferred number saved. We will request it automatically after telephone approval.'));
+      })
+    );
+    $('#search-results').append(card);
+  }
   if (!results.length) notice('No available numbers match these digits.');
 }); };
 function renderNumbers() {
@@ -60,7 +95,23 @@ function renderNumbers() {
   }
   if (!owned.length) $('#owned-numbers').append(element('p', 'Your activated numbers will appear here.'));
 }
-async function loadOrders() { const orders = await api('/api/orders'); $('#orders').replaceChildren(); for (const o of orders) { const row = element('article', undefined, 'owned'); row.append(element('h3', o.phone), element('p', `${o.status}${o.error ? ' · ' + o.error : ''}`)); $('#orders').append(row); } }
+async function loadOrders() {
+  const orders = await api('/api/orders');
+  const labels = {
+    awaiting_approval: 'Preferred number · waiting for telephone approval',
+    queued: 'Activation queued',
+    processing: 'Activating',
+    active: 'Active',
+    review: 'Activation needs attention',
+  };
+  $('#orders').replaceChildren();
+  for (const o of orders) {
+    const row = element('article', undefined, 'owned');
+    const label = labels[o.status] || o.status;
+    row.append(element('h3', o.phone), element('p', label + (o.error ? ' · ' + o.error : '')));
+    $('#orders').append(row);
+  }
+}
 const planDescriptions = {
   business: 'Business Number — £7.99 per month: a UK number with call forwarding. Choose Connect if you also need to send business SMS.',
   connect: 'Connect — £14.99 per month: a UK number, call forwarding, 50 outgoing SMS segments per month and a threaded inbox. Monthly usage allowances apply.',
@@ -225,12 +276,12 @@ async function loadCompanyVerification() {
   if (telephonePanel) {
     const telephoneComplete = value.telephone_status === 'approved';
     telephonePanel.hidden = !checks.director_authority || telephoneComplete;
-    telephonePreflight.hidden = Boolean(value.telephone_authorized);
+    telephonePreflight.hidden = true;
     telephoneStart.hidden = true;
-    if (value.telephone_authorized && !telephoneComplete) {
-      $('#company-telephone-readiness').textContent = 'Telephone approval has started. We are reviewing your application; this page will update automatically.';
-    } else if (!telephoneComplete) {
-      $('#company-telephone-readiness').textContent = 'Before anything is submitted, Raeburn Connect can check the current UK telephone requirements against your verified company details without submitting an application.';
+    if (!telephoneComplete) {
+      $('#company-telephone-readiness').textContent = value.telephone_authorized
+        ? 'Telephone approval has started automatically. We are reviewing your application; this page will update automatically. Telephone approval typically takes 1–3 business days, although some applications may be approved sooner.'
+        : 'Telephone approval will start automatically. Telephone approval typically takes 1–3 business days, although some applications may be approved sooner.';
     }
   }
 
@@ -251,6 +302,8 @@ async function loadCompanyVerification() {
 
     if (value.telephone_status) $('#company-verification-explanation').textContent += ' Telephone approval: ' + value.telephone_status.replaceAll('_',' ') + '.';
   }
+  companyVerificationState = value;
+  return value;
 }
 let telephonePreflightReady = false;
 $('#company-telephone-preflight').onclick = () => act(async () => {
@@ -281,7 +334,7 @@ $('#company-telephone-start').onclick = () => act(async () => {
         ? 'Telephone approval is complete.'
         : 'Telephone approval has started. We are reviewing your application; this page will update automatically.';
     await loadCompanyVerification();
-    notice('Telephone approval started. Raeburn Connect will keep checking for the result.');
+    notice('Telephone approval started. Telephone approval typically takes 1–3 business days, although some applications may be approved sooner.');
   } finally {
     button.disabled = false;
   }

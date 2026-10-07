@@ -7,6 +7,7 @@ from app.main import app
 from app.models import DB, Event, Message, Number, Order, Suppression, Tenant
 from app.security import encrypt
 from app.worker import provision_one, send_one
+from app.company_verification import release_waiting_orders
 
 HEADERS = {'origin': 'http://localhost:8000', 'x-requested-with': 'Raeburn'}
 
@@ -58,7 +59,7 @@ def test_registration_closed():
 def test_purchase_gates_and_idempotency():
     c,t=customer()
     data={'phone':'+442080001001','type':'Local','request_key':'1234567890abcdef'}
-    assert c.post('/api/orders',json=data,headers=HEADERS).status_code==409
+    assert c.post('/api/orders',json=data,headers=HEADERS).status_code==402
     enable(t)
     a=c.post('/api/orders',json=data,headers=HEADERS)
     b=c.post('/api/orders',json=data,headers=HEADERS)
@@ -68,6 +69,54 @@ def test_purchase_gates_and_idempotency():
     with DB() as db:
         assert len(db.scalars(select(Order)).all())==1
 
+
+
+def test_preferred_number_waits_for_telephone_approval_and_never_provisions_early(monkeypatch):
+    c,t=customer()
+    with DB.begin() as db:
+        tenant=db.get(Tenant,t)
+        tenant.status='pending'
+        tenant.billing_status='active'
+    data={'phone':'+442080001001','type':'Local','request_key':'1234567890abcdef'}
+    response=c.post('/api/orders',json=data,headers=HEADERS)
+    assert response.status_code==200
+    assert response.json()['status']=='awaiting_approval'
+    assert 'availability cannot be guaranteed' in response.json()['message'].lower()
+
+    client=MagicMock()
+    monkeypatch.setattr('app.worker.tenant_client',lambda tenant:client)
+    assert provision_one() is False
+    client.incoming_phone_numbers.create.assert_not_called()
+    with DB() as db:
+        assert db.scalar(select(Order)).status=='awaiting_approval'
+
+
+def test_waiting_number_is_released_only_after_matching_telephone_approval():
+    c,t=customer()
+    with DB.begin() as db:
+        tenant=db.get(Tenant,t)
+        tenant.status='pending'
+        tenant.billing_status='active'
+        order=Order(
+            tenant_id=t,
+            phone='+442080001001',
+            number_type='Local',
+            request_key='1234567890abcdef',
+            status='awaiting_approval',
+        )
+        db.add(order)
+
+    with DB.begin() as db:
+        tenant=db.get(Tenant,t)
+        assert release_waiting_orders(db,tenant)==0
+        assert db.scalar(select(Order)).status=='awaiting_approval'
+
+    with DB.begin() as db:
+        tenant=db.get(Tenant,t)
+        tenant.status='approved'
+        tenant.bundle_type='Local'
+        assert release_waiting_orders(db,tenant)==1
+        assert db.scalar(select(Order)).status=='queued'
 
 def test_cross_tenant_isolation():
     c,t=customer()

@@ -28,7 +28,7 @@ from qrcode.image.svg import SvgPathImage
 from sqlalchemy.exc import IntegrityError
 
 from .config import settings
-from .models import ActionToken, Audit, CompanyVerification, DB, EmailJob, RateBucket, Tenant, User, VerifiedCompanyClaim, now, uid
+from .models import ActionToken, Audit, CompanyVerification, DB, EmailJob, Order, RateBucket, Tenant, User, VerifiedCompanyClaim, now, uid
 from .security import csrf, current_user, decrypt, encrypt, rate_limit
 
 router = APIRouter(prefix='/api/company-verification')
@@ -245,9 +245,12 @@ def status(user=Depends(current_user)):
             stage_label = ('Telephone approval complete' if telephone_stage == 'approved'
                            else 'Telephone approval in progress')
         provider_state = json.loads(proof.provider_state or '{}')
+        effective_reason = proof.reason or (
+            provider_state.get('reason', '') if proof.status == 'verified' else ''
+        )
         return {'available': settings.company_verification_enabled, 'status': proof.status,
                 'message': MESSAGES.get(proof.status, MESSAGES['pending']),
-                'explanation': REASONS.get(proof.reason, ''), 'reason': proof.reason, 'domain': proof.domain,
+                'explanation': REASONS.get(effective_reason, ''), 'reason': effective_reason, 'domain': proof.domain,
                 'stage': stage, 'stage_total': 6, 'stage_label': stage_label,
                 'checks': {'business_email': proof.email_verified, 'dns': proof.dns_verified,
                            'company_register': proof.registry_verified, 'director_authority': proof.authority_verified},
@@ -257,7 +260,9 @@ def status(user=Depends(current_user)):
                 'identity_retry': identity_retry,
                 'retryable': proof.status == 'held' and proof.reason in {'registry_mismatch', 'provider_unavailable'},
                 'telephone_status': telephone_stage,
-                'telephone_authorized': bool(provider_state.get('submission_authorized'))}
+                'telephone_authorized': bool(provider_state.get('submission_authorized')),
+                'telephone_wait': ('Telephone approval usually completes within 1 business day. '
+                                   'Some applications can take up to 3 business days.')}
 
 
 @router.post('/start', dependencies=[Depends(csrf)])
@@ -595,9 +600,20 @@ def identity_mobile_complete(token: str):
             else:
                 claim.domain = proof.domain
             proof.status = 'verified'
-            proof.next_check_at = now() + timedelta(hours=24)
+            state = json.loads(proof.provider_state or '{}')
+            if state.get('stage') != 'approved':
+                state['submission_authorized'] = True
+                state['stage'] = state.get('stage') or 'authorized'
+                state['authorized_automatically'] = True
+                proof.provider_state = json.dumps(state)
+                proof.next_check_at = now()
+                db.add(Audit(tenant_id=tenant_id, actor=proof.user_id,
+                             action='company.telephone_approval.authorized',
+                             detail='automatic_after_director_verification'))
+            else:
+                proof.next_check_at = now() + timedelta(hours=24)
             notify_state(db, proof)
-            return {'status': 'verified'}
+            return {'status': 'verified', 'telephone_approval': 'starting'}
         except ValueError as error:
             code = str(error)
             proof.status, proof.reason = 'held', code if code in REASONS else 'provider_requirements'
@@ -835,6 +851,28 @@ def cleanup_one():
     return True
 
 
+def release_waiting_orders(db, tenant):
+    if tenant.status != 'approved' or not tenant.bundle_type:
+        return 0
+    rows = db.scalars(
+        select(Order).where(
+            Order.tenant_id == tenant.id,
+            Order.status == 'awaiting_approval',
+            Order.number_type == tenant.bundle_type,
+        )
+    ).all()
+    for order in rows:
+        order.status = 'queued'
+        order.error = ''
+        db.add(Audit(
+            tenant_id=tenant.id,
+            actor='worker',
+            action='number.order.released_after_approval',
+            detail=order.id,
+        ))
+    return len(rows)
+
+
 def verification_one():
     if not settings.company_verification_enabled:
         return False
@@ -896,14 +934,43 @@ def verification_one():
                     else:
                         claim.domain = proof.domain
                     proof.status = 'verified'
-                    proof.next_check_at = now() + timedelta(hours=24)
                     provider_state = json.loads(proof.provider_state or '{}')
+                    if provider_state.get('stage') != 'approved' and not provider_state.get('submission_authorized'):
+                        provider_state['submission_authorized'] = True
+                        provider_state['stage'] = provider_state.get('stage') or 'authorized'
+                        provider_state['authorized_automatically'] = True
+                        proof.provider_state = json.dumps(provider_state)
+                        db.add(Audit(tenant_id=tenant.id, actor='worker',
+                                     action='company.telephone_approval.authorized',
+                                     detail='automatic_after_company_verification'))
                     if settings.verification_auto_twilio or provider_state.get('submission_authorized'):
                         from .regulatory_automation import advance
-                        advance(db, tenant, proof, company)
-                        # Poll provider approval frequently, then revalidate daily.
-                        if tenant.status != 'approved':
-                            proof.next_check_at = now() + timedelta(minutes=10)
+                        try:
+                            advance(db, tenant, proof, company)
+                        except ValueError as provider_error:
+                            # Raeburn KYC remains verified even if telephone approval
+                            # needs attention or the remote provider result is uncertain.
+                            code = str(provider_error)
+                            provider_state = json.loads(proof.provider_state or '{}')
+                            provider_state['reason'] = code if code in REASONS else 'provider_requirements'
+                            provider_state['stage'] = (
+                                'rejected' if code == 'provider_rejected' else 'needs_attention'
+                            )
+                            proof.provider_state = json.dumps(provider_state)
+                            # Telephone review state must not invalidate completed Raeburn KYC.
+                            proof.reason = ''
+                            tenant.status = 'pending'
+                            proof.next_check_at = now() + timedelta(hours=24)
+                        else:
+                            proof.reason = ''
+                            # Check provider review often enough that approved accounts unlock promptly.
+                            if tenant.status == 'approved':
+                                release_waiting_orders(db, tenant)
+                                proof.next_check_at = now() + timedelta(hours=24)
+                            else:
+                                proof.next_check_at = now() + timedelta(minutes=5)
+                    else:
+                        proof.next_check_at = now() + timedelta(hours=24)
                 else:
                     proof.status = 'pending'
                     if tenant.status == 'approved':
