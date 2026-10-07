@@ -229,8 +229,8 @@ async function loadCompanyVerification() {
     telephoneStart.hidden = true;
     if (!telephoneComplete) {
       $('#company-telephone-readiness').textContent = value.telephone_authorized
-        ? 'Telephone approval has started automatically. We are reviewing your application; this page will update automatically. Most applications are reviewed within 1 business day, although some can take up to 3 business days.'
-        : 'Telephone approval will start automatically. Most applications are reviewed within 1 business day, although some can take up to 3 business days.';
+        ? 'Telephone approval has started automatically. We are reviewing your application; this page will update automatically. Telephone approval typically takes 1–3 business days, although some applications may be approved sooner.'
+        : 'Telephone approval will start automatically. Telephone approval typically takes 1–3 business days, although some applications may be approved sooner.';
     }
   }
 
@@ -281,7 +281,7 @@ $('#company-telephone-start').onclick = () => act(async () => {
         ? 'Telephone approval is complete.'
         : 'Telephone approval has started. We are reviewing your application; this page will update automatically.';
     await loadCompanyVerification();
-    notice('Telephone approval started. Most applications are reviewed within 1 business day, although some can take up to 3 business days.');
+    notice('Telephone approval started. Telephone approval typically takes 1–3 business days, although some applications may be approved sooner.');
   } finally {
     button.disabled = false;
   }
