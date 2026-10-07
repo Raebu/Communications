@@ -109,7 +109,12 @@ def test_voice_signed_turn_replay_and_transfer(setup_ai, monkeypatch):
     next_action = ET.fromstring(first.text).find("Gather").attrib["action"]
     next_path = urlparse(next_action).path + "?" + urlparse(next_action).query
     human = twilio_post(c, next_path, t, {"CallSid": "CAvoice", "Digits": "0"})
-    assert "<Dial" in human.text and "+447700900111" in human.text
+    redirect = ET.fromstring(human.text).find("Redirect")
+    assert redirect is not None
+    assert "voice-human-fallback" in redirect.text
+    human_path = urlparse(redirect.text).path
+    connected = twilio_post(c, human_path, t, {"CallSid": "CAvoice"})
+    assert "<Dial" in connected.text and "+447700900111" in connected.text
     assert len(calls) == 1
     with DB() as db:
         session = db.get(VoiceSession, "CAvoice")
