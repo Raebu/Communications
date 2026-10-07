@@ -355,6 +355,24 @@ function routingFormConfig() {
     emergency_mode: form.elements.emergency_mode.value,
     never_miss: neverMiss,
     vip_destination: form.elements.vip_destination.value.trim(),
+    customer_routing: {
+      enabled: form.elements.customer_routing_enabled.checked,
+      owner_routes: form.elements.owner_routes.value
+        .split(/\n+/)
+        .map(value => value.trim())
+        .filter(Boolean)
+        .map(value => {
+          const [owner, ...rest] = value.split('=');
+          return {owner: (owner || '').trim(), destination: rest.join('=').trim()};
+        })
+        .filter(value => value.owner && value.destination),
+      known_customer_destination: form.elements.known_customer_destination.value.trim(),
+      open_promise_destination: form.elements.open_promise_destination.value.trim(),
+      risk_destination: form.elements.risk_destination.value.trim(),
+      risk_threshold: Number(form.elements.risk_threshold.value || 70),
+      revenue_destination: form.elements.revenue_destination.value.trim(),
+      revenue_threshold: Math.round(Number(form.elements.revenue_threshold.value || 0) * 100),
+    },
     whisper: form.elements.whisper.checked,
     intent_first: form.elements.intent_first.checked,
     intent_prompt: form.elements.intent_prompt.value,
@@ -380,6 +398,17 @@ function applyRoutingConfig(config) {
   form.elements.intent_first.checked = Boolean(config.intent_first);
   form.elements.intent_prompt.value = config.intent_prompt || 'Tell me briefly what you are calling about, or use the keypad.';
   form.elements.vip_destination.value = config.vip_destination || '';
+  const customerRouting = config.customer_routing || {};
+  form.elements.customer_routing_enabled.checked = Boolean(customerRouting.enabled);
+  form.elements.known_customer_destination.value = customerRouting.known_customer_destination || '';
+  form.elements.open_promise_destination.value = customerRouting.open_promise_destination || '';
+  form.elements.risk_destination.value = customerRouting.risk_destination || '';
+  form.elements.risk_threshold.value = String(customerRouting.risk_threshold || 70);
+  form.elements.revenue_destination.value = customerRouting.revenue_destination || '';
+  form.elements.revenue_threshold.value = String((customerRouting.revenue_threshold || 100000) / 100);
+  form.elements.owner_routes.value = (customerRouting.owner_routes || [])
+    .map(item => item.owner + '=' + item.destination)
+    .join('\n');
   form.elements.emergency_mode.value = config.emergency_mode || 'normal';
   form.elements.voicemail_greeting.value = config.voicemail_greeting || '';
   form.elements.transcribe_voicemail.checked = Boolean(config.transcribe_voicemail);
