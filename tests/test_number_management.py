@@ -1,12 +1,9 @@
 from unittest.mock import MagicMock
 
-from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 import app.number_management as nm
-from app.main import app
-from app.models import DB, Number, OutboundCallRequest, PortRequest, Suppression, Tenant
-from app.security import encrypt
+from app.models import DB, PortRequest, Suppression
 from test_flows import HEADERS, customer, enable, number
 
 
