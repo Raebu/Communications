@@ -4,7 +4,6 @@ Never blindly retry an ambiguous outbound send: Twilio Messaging create has no
 application idempotency key. An operator reconciles sending/review records.
 """
 
-import hashlib
 import logging
 import os
 import socket
@@ -16,7 +15,7 @@ from .config import settings
 from .email_delivery import send_email
 from .ai import draft_one
 from .autonomy import action_one, conversation, reminder_one
-from .models import AIProfile, Audit, DB, EmailJob, Message, Number, Order, RateBucket, Suppression, Tenant, WorkerHeartbeat, now
+from .models import AIProfile, Audit, DB, EmailJob, Message, Number, Order, Suppression, Tenant, WorkerHeartbeat, now
 from .security import decrypt
 from .billing import periodic_reconcile
 from .providers import tenant_client
@@ -197,20 +196,6 @@ def email_one():
             send_email(job.recipient, payload, job_id)
         with DB.begin() as db:
             job = db.get(EmailJob, job_id)
-            if payload.get("category") == "company_verification":
-                recipient_key = hashlib.sha256(job.recipient.lower().encode()).hexdigest()[:32]
-                key = "verification-email-sent:" + recipient_key + ":" + now().date().isoformat()
-                from sqlalchemy.dialects.postgresql import insert as pg_insert
-                from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-                insert = pg_insert if db.bind.dialect.name == "postgresql" else sqlite_insert
-                db.execute(
-                    insert(RateBucket)
-                    .values(key=key, count=1, expires_at=now() + timedelta(days=2))
-                    .on_conflict_do_update(
-                        index_elements=["key"],
-                        set_={"count": RateBucket.count + 1, "expires_at": now() + timedelta(days=2)},
-                    )
-                )
             job.status, job.encrypted_payload = "sent", ""
     except Exception:
         log.error("Transactional email %s requires review", job_id)
