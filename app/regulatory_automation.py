@@ -140,7 +140,7 @@ def advance(db, tenant, proof, company):
                 raise ValueError('provider_requirements')
             state['requirements'] = current_requirements
             if not state.get('address'):
-                row = only_named(client.addresses.list(friendly_name=resource_name, limit=101), name)
+                row = only_named(client.addresses.list(friendly_name=resource_name, limit=101), resource_name)
                 row = row or client.addresses.create(friendly_name=resource_name, **address_fields(company))
                 state.update(address=row.sid, stage='address_created')
             elif not state.get('end_user'):
@@ -155,8 +155,8 @@ def advance(db, tenant, proof, company):
                     attributes={'address_sids': [state['address']]})
                 state.update(document=row.sid, stage='address_proof_created')
             elif not state.get('bundle'):
-                row = only_named(rc.bundles.list(friendly_name=resource_name, limit=101), name)
-                row = row or rc.bundles.create(friendly_name=resource_name, email=proof.mailbox, regulation_sid=regulation.sid)
+                row = only_named(rc.bundles.list(friendly_name=bundle_name, limit=101), bundle_name)
+                row = row or rc.bundles.create(friendly_name=bundle_name, email=proof.mailbox, regulation_sid=regulation.sid)
                 if row.regulation_sid != regulation.sid:
                     raise ValueError('provider_uncertain')
                 state.update(bundle=row.sid, stage='bundle_created')
