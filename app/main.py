@@ -794,7 +794,7 @@ def approve(tenant_id: str, data: Approval, user=Depends(current_user)):
         client = tenant_client(t)
         bundle = client.numbers.v2.regulatory_compliance.bundles(data.bundle_sid).fetch()
         if bundle.status != "twilio-approved":
-            raise HTTPException(409, "Twilio has not approved this bundle")
+            raise HTTPException(409, "The telephone provider has not approved this bundle")
         regulation = client.numbers.v2.regulatory_compliance.regulations(bundle.regulation_sid).fetch()
         expected = {"Local": "local", "Mobile": "mobile", "TollFree": "toll-free"}[data.type]
         if regulation.iso_country != "GB" or regulation.number_type != expected or regulation.end_user_type != "business":
