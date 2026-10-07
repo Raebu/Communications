@@ -258,6 +258,10 @@ def get_call_routing(number_id: str, user=Depends(current_user)):
             "intent_prompt": "Tell me briefly what you are calling about, or use the keypad.",
             "voicemail_greeting": "Nobody is available right now. Your message will be recorded. Please leave it after the tone.",
             "transcribe_voicemail": False,
+            "record_answered_calls": False,
+            "transcribe_answered_calls": False,
+            "recording_retention_days": 30,
+            "recording_announcement": "This call may be recorded for service and quality purposes.",
             "callback_message": "We have saved your callback request and the team will follow up.",
         }
 
