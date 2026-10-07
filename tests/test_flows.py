@@ -406,14 +406,14 @@ def test_verified_vip_bypasses_menu_and_receives_private_brief(monkeypatch):
     enable(t)
     n=number(t)
     with DB.begin() as db:
-        customer=Customer(tenant_id=t)
-        db.add(customer)
+        customer_row=Customer(tenant_id=t)
+        db.add(customer_row)
         db.flush()
         db.add(CustomerState(
-            customer_id=customer.id,tenant_id=t,vip=True,owner='Martin',
+            customer_id=customer_row.id,tenant_id=t,vip=True,owner='Martin',
             encrypted_state=encrypt({'summary':'Waiting for revised quote','next_best_action':'Discuss renewal'})
         ))
-        register_verified_identity(db,t,customer.id,'phone','+447700900001')
+        register_verified_identity(db,t,customer_row.id,'phone','+447700900001')
 
     config={
         'enabled':True,
