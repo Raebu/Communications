@@ -1289,6 +1289,9 @@ async def call_recording(request: Request):
         if _event_with_source(db, tenant_id, "call.recording", recording_sid):
             return Response(status_code=204)
         event = _call_event(db, tenant_id, call_sid)
+        number = db.get(Number, call.number_id)
+        route_settings = routing_settings_for(db, number) if number else {}
+        retention_days = int((route_settings or {}).get("recording_retention_days", settings.voice_retention_days))
         record_event(
             db,
             tenant_id,
@@ -1303,6 +1306,7 @@ async def call_recording(request: Request):
                 "duration": p.get("RecordingDuration", "0"),
                 "channels": p.get("RecordingChannels", ""),
                 "source": p.get("RecordingSource", ""),
+                "retention_days": max(1, min(90, retention_days)),
                 "deleted": False,
             },
         )
