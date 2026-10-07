@@ -1210,58 +1210,7 @@ async def voice_status(request: Request):
             return Response("<Response/>", media_type="application/xml")
         dial_status = p.get("DialCallStatus", "")
         if dial_status in {"no-answer", "busy", "failed", "canceled"}:
-            existing_recoveries = db.scalars(
-                select(RecoveryJob).where(
-                    RecoveryJob.tenant_id == tenant_id,
-                    RecoveryJob.kind == "missed_call",
-                    RecoveryJob.status.in_(["queued", "attention"]),
-                )
-            ).all()
-            event = db.scalar(
-                select(CustomerEvent).where(
-                    CustomerEvent.tenant_id == tenant_id,
-                    CustomerEvent.source_id == call.sid,
-                    CustomerEvent.kind == "call.inbound",
-                ).order_by(CustomerEvent.occurred_at.desc()).limit(1)
-            )
-            duplicate = False
-            for recovery in existing_recoveries:
-                if not recovery.encrypted_payload:
-                    continue
-                try:
-                    duplicate = decrypt(recovery.encrypted_payload).get("call_sid") == call.sid
-                except Exception:
-                    duplicate = False
-                if duplicate:
-                    break
-            if not duplicate:
-                detail = decrypt(event.encrypted_payload) if event and event.encrypted_payload else {}
-                db.add(
-                    RecoveryJob(
-                        tenant_id=tenant_id,
-                        customer_id=event.customer_id if event else None,
-                        kind="missed_call",
-                        status="attention",
-                        due_at=now(),
-                        encrypted_payload=encrypt(
-                            {
-                                "call_sid": call.sid,
-                                "from": detail.get("from", ""),
-                                "to": detail.get("to", ""),
-                                "reason": dial_status,
-                            }
-                        ),
-                    )
-                )
-                record_event(
-                    db,
-                    tenant_id,
-                    "call.missed",
-                    "voice",
-                    call.sid,
-                    event.customer_id if event else None,
-                    {"reason": dial_status},
-                )
+            _queue_call_recovery(db, tenant_id, call, "missed_call", dial_status)
         try:
             seconds = int(p.get("CallDuration", p.get("DialCallDuration", "0")))
             if "CallDuration" not in p:
