@@ -314,6 +314,122 @@ def test_twilio_unknown_requirements_fail_closed():
         )
 
 
+
+def test_twilio_direct_customer_payload_is_not_subassigned(configured):
+    c, tid = applicant()
+    assert begin(c).status_code == 200
+    with DB.begin() as db:
+        proof = db.get(CompanyVerification, tid)
+        proof.encrypted_contact = encrypt({
+            "phone": "+447700900001",
+            "first_name": "Alice",
+            "last_name": "Smith",
+        })
+        attrs, contact = rc.end_user_attributes(proof, COMPANY)
+    assert attrs["business_identity"] == "DIRECT_CUSTOMER"
+    assert attrs["is_subassigned"] == "NO"
+    assert attrs["business_registration_identifier"] == "UK:CRN"
+    assert contact["phone"] == "+447700900001"
+    assert rc.TYPES["TollFree"] == "toll_free"
+
+
+def test_twilio_preflight_is_read_only_and_validates_live_requirements(configured, monkeypatch):
+    c, tid = applicant()
+    assert begin(c).status_code == 200
+    client = MagicMock()
+    monkeypatch.setattr(rc, "parent_client", lambda: client)
+    rules = {
+        "end_user": [{
+            "type": "business",
+            "fields": [
+                "business_name", "business_registration_identifier",
+                "business_registration_number", "business_website",
+                "first_name", "last_name", "phone_number", "email",
+                "business_identity", "is_subassigned", "comments",
+            ],
+        }],
+        "supporting_document": [[{
+            "accepted_documents": [{
+                "type": "business_address",
+                "fields": ["address_sids"],
+            }],
+        }]],
+    }
+    regulation = NS(
+        sid="RNproof",
+        iso_country="GB",
+        number_type="local",
+        end_user_type="business",
+        requirements=rules,
+    )
+    remote = client.numbers.v2.regulatory_compliance
+    remote.regulations.list.return_value = [regulation]
+    remote.regulations.return_value.fetch.return_value = regulation
+    client.lookups.v2.phone_numbers.return_value.fetch.return_value = NS(
+        valid=True,
+        phone_number="+447700900001",
+        line_type_intelligence={"type": "mobile", "error_code": None},
+    )
+
+    with DB.begin() as db:
+        proof = db.get(CompanyVerification, tid)
+        proof.email_verified = proof.dns_verified = proof.registry_verified = proof.authority_verified = True
+        proof.status = "verified"
+        proof.encrypted_contact = encrypt({
+            "phone": "+447700900001",
+            "first_name": "Alice",
+            "last_name": "Smith",
+        })
+        tenant = db.get(Tenant, tid)
+        result = rc.preflight(tenant, proof, COMPANY)
+
+    assert result["ready"] is True
+    assert result["is_subassigned"] == "NO"
+    assert result["business_identity"] == "DIRECT_CUSTOMER"
+    remote.bundles.create.assert_not_called()
+    remote.end_users.create.assert_not_called()
+    remote.supporting_documents.create.assert_not_called()
+    client.addresses.create.assert_not_called()
+    client.api.accounts.create.assert_not_called()
+
+
+def test_telephone_start_requires_successful_preflight_and_authorizes_only_this_claim(configured, monkeypatch):
+    c, tid = applicant()
+    assert begin(c).status_code == 200
+    with DB.begin() as db:
+        proof = db.get(CompanyVerification, tid)
+        proof.email_verified = proof.dns_verified = proof.registry_verified = proof.authority_verified = True
+        proof.status = "verified"
+        proof.encrypted_contact = encrypt({
+            "phone": "+447700900001",
+            "first_name": "Alice",
+            "last_name": "Smith",
+        })
+
+    monkeypatch.setattr(rc, "preflight", lambda tenant, proof, company: {
+        "ready": True,
+        "number_type": proof.number_type,
+        "regulation_sid": "RNproof",
+        "required_fields": ["business_name"],
+        "business_identity": "DIRECT_CUSTOMER",
+        "is_subassigned": "NO",
+        "contact_mobile": True,
+        "registered_address": True,
+    })
+    monkeypatch.setattr(cv, "registry", lambda tenant: (COMPANY, OFFICERS))
+
+    response = c.post("/api/company-verification/telephone-start", headers=HEADERS)
+    assert response.status_code == 200
+    assert response.json()["status"] == "authorized"
+
+    with DB() as db:
+        proof = db.get(CompanyVerification, tid)
+        state = cv.json.loads(proof.provider_state)
+        assert state["submission_authorized"] is True
+        assert state["preflight_regulation_sid"] == "RNproof"
+        assert proof.next_check_at <= now()
+
+
 def test_twilio_approval_reads_evidence_and_does_not_purchase_number(configured, monkeypatch):
     c, tid = applicant()
     assert begin(c).status_code == 200

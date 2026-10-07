@@ -240,8 +240,11 @@ def status(user=Depends(current_user)):
         else:
             stage, stage_label = 1, 'Verification started'
         telephone_stage = json.loads(proof.provider_state or '{}').get('stage', 'not_started')
-        if proof.status == 'verified' and telephone_stage == 'approved':
-            stage, stage_label = 6, 'Telephone approval complete'
+        if proof.authority_verified and telephone_stage not in {'', 'not_started'}:
+            stage = 6
+            stage_label = ('Telephone approval complete' if telephone_stage == 'approved'
+                           else 'Telephone approval in progress')
+        provider_state = json.loads(proof.provider_state or '{}')
         return {'available': settings.company_verification_enabled, 'status': proof.status,
                 'message': MESSAGES.get(proof.status, MESSAGES['pending']),
                 'explanation': REASONS.get(proof.reason, ''), 'reason': proof.reason, 'domain': proof.domain,
@@ -253,7 +256,8 @@ def status(user=Depends(current_user)):
                 'identity_ready': prerequisites and (proof.status == 'pending' or identity_retry),
                 'identity_retry': identity_retry,
                 'retryable': proof.status == 'held' and proof.reason in {'registry_mismatch', 'provider_unavailable'},
-                'telephone_status': telephone_stage}
+                'telephone_status': telephone_stage,
+                'telephone_authorized': bool(provider_state.get('submission_authorized'))}
 
 
 @router.post('/start', dependencies=[Depends(csrf)])
@@ -605,6 +609,72 @@ def identity_mobile_complete(token: str):
             return {'status': 'processing'}
 
 
+@router.post('/telephone-preflight', dependencies=[Depends(csrf)])
+def telephone_preflight(user=Depends(current_user)):
+    owner(user)
+    rate_limit('company-telephone-preflight:' + user.id, 10)
+    with DB() as db:
+        tenant = db.get(Tenant, user.tenant_id)
+        proof = db.get(CompanyVerification, tenant.id)
+        if (not proof or proof.user_id != user.id or proof.status != 'verified'
+                or not proof.authority_verified or proof.profile_hash != profile_hash(tenant)):
+            raise HTTPException(409, 'Complete company and director verification first')
+        try:
+            company, _ = registry(tenant)
+            registry_match(tenant, company)
+            from .regulatory_automation import preflight
+            result = preflight(tenant, proof, company)
+            return result
+        except ValueError as error:
+            code = str(error)
+            detail = REASONS.get(code, 'Twilio live requirements are not ready for automatic submission.')
+            raise HTTPException(409, detail) from None
+        except Exception:
+            raise HTTPException(503, 'Twilio telephone approval preflight is temporarily unavailable.') from None
+
+
+@router.post('/telephone-start', dependencies=[Depends(csrf)])
+def telephone_start(user=Depends(current_user)):
+    owner(user)
+    rate_limit('company-telephone-start:' + user.id, 3)
+    with DB() as db:
+        tenant = db.get(Tenant, user.tenant_id)
+        proof = db.get(CompanyVerification, tenant.id)
+        if (not proof or proof.user_id != user.id or proof.status != 'verified'
+                or not proof.authority_verified or proof.profile_hash != profile_hash(tenant)):
+            raise HTTPException(409, 'Complete company and director verification first')
+        try:
+            company, _ = registry(tenant)
+            registry_match(tenant, company)
+            from .regulatory_automation import preflight
+            result = preflight(tenant, proof, company)
+        except ValueError as error:
+            code = str(error)
+            detail = REASONS.get(code, 'Twilio live requirements are not ready for automatic submission.')
+            raise HTTPException(409, detail) from None
+        except Exception:
+            raise HTTPException(503, 'Twilio telephone approval preflight is temporarily unavailable.') from None
+
+    with DB.begin() as db:
+        tenant = db.scalar(select(Tenant).where(Tenant.id == user.tenant_id).with_for_update())
+        proof = db.get(CompanyVerification, tenant.id)
+        if (not proof or proof.status != 'verified' or not proof.authority_verified
+                or proof.profile_hash != profile_hash(tenant)):
+            raise HTTPException(409, 'Verification state changed; refresh and try again')
+        state = json.loads(proof.provider_state or '{}')
+        if state.get('stage') == 'approved':
+            return {'status': 'approved'}
+        state['submission_authorized'] = True
+        state['preflight_regulation_sid'] = result['regulation_sid']
+        state['stage'] = state.get('stage') or 'authorized'
+        proof.provider_state = json.dumps(state)
+        proof.next_check_at = now()
+        db.add(Audit(tenant_id=tenant.id, actor=user.id,
+                     action='company.telephone_approval.authorized',
+                     detail=result['regulation_sid']))
+    return {'status': 'authorized'}
+
+
 def registry(tenant):
     number = tenant.registration_number.strip().upper()
     with httpx.Client(timeout=4, follow_redirects=False, trust_env=False) as api:
@@ -827,7 +897,8 @@ def verification_one():
                         claim.domain = proof.domain
                     proof.status = 'verified'
                     proof.next_check_at = now() + timedelta(hours=24)
-                    if settings.verification_auto_twilio:
+                    provider_state = json.loads(proof.provider_state or '{}')
+                    if settings.verification_auto_twilio or provider_state.get('submission_authorized'):
                         from .regulatory_automation import advance
                         advance(db, tenant, proof, company)
                         # Poll provider approval frequently, then revalidate daily.
