@@ -848,6 +848,28 @@ def cleanup_one():
     return True
 
 
+def release_waiting_orders(db, tenant):
+    if tenant.status != 'approved' or not tenant.bundle_type:
+        return 0
+    rows = db.scalars(
+        select(Order).where(
+            Order.tenant_id == tenant.id,
+            Order.status == 'awaiting_approval',
+            Order.number_type == tenant.bundle_type,
+        )
+    ).all()
+    for order in rows:
+        order.status = 'queued'
+        order.error = ''
+        db.add(Audit(
+            tenant_id=tenant.id,
+            actor='worker',
+            action='number.order.released_after_approval',
+            detail=order.id,
+        ))
+    return len(rows)
+
+
 def verification_one():
     if not settings.company_verification_enabled:
         return False
@@ -923,22 +945,7 @@ def verification_one():
                         advance(db, tenant, proof, company)
                         # Check provider review often enough that approved accounts unlock promptly.
                         if tenant.status == 'approved':
-                            waiting_orders = db.scalars(
-                                select(Order).where(
-                                    Order.tenant_id == tenant.id,
-                                    Order.status == 'awaiting_approval',
-                                    Order.number_type == tenant.bundle_type,
-                                )
-                            ).all()
-                            for order in waiting_orders:
-                                order.status = 'queued'
-                                order.error = ''
-                                db.add(Audit(
-                                    tenant_id=tenant.id,
-                                    actor='worker',
-                                    action='number.order.released_after_approval',
-                                    detail=order.id,
-                                ))
+                            release_waiting_orders(db, tenant)
                             proof.next_check_at = now() + timedelta(hours=24)
                         else:
                             proof.next_check_at = now() + timedelta(minutes=5)
