@@ -14,8 +14,26 @@ from twilio.request_validator import RequestValidator
 from .config import settings
 from .integrations import router as integrations_router
 from .channels import enabled as channel_enabled
-from .call_routing import router as call_routing_router, routing_for, menu_xml, dial_xml, unavailable_xml, selected_destination
-from .customer_os import router as customer_os_router, customer_for_identity, record_event
+from .call_routing import (
+    router as call_routing_router,
+    routing_for,
+    menu_xml,
+    dial_xml,
+    dial_group_xml,
+    unavailable_xml,
+    selected_option,
+    ordered_members,
+    initial_action,
+    voicemail_xml,
+    callback_xml,
+    whisper_xml,
+)
+from .customer_os import (
+    router as customer_os_router,
+    caller_brief,
+    customer_for_identity,
+    record_event,
+)
 from .ai import router as ai_router, start_voice, voice_turn, configured as ai_configured
 from .models import AIProfile, Conversation, CompanyVerification
 from .autonomy import router as autonomy_router, inbound_ai, conversation
@@ -658,6 +676,145 @@ async def message_status(request: Request):
     return Response(status_code=204)
 
 
+def _call_event(db, tenant_id, call_sid):
+    return db.scalar(
+        select(CustomerEvent).where(
+            CustomerEvent.tenant_id == tenant_id,
+            CustomerEvent.source_id == call_sid,
+            CustomerEvent.kind == "call.inbound",
+        ).order_by(CustomerEvent.occurred_at.desc()).limit(1)
+    )
+
+
+def _call_detail(event):
+    return decrypt(event.encrypted_payload) if event and event.encrypted_payload else {}
+
+
+def _recovery_exists(db, tenant_id, kind, call_sid):
+    rows = db.scalars(
+        select(RecoveryJob).where(
+            RecoveryJob.tenant_id == tenant_id,
+            RecoveryJob.kind == kind,
+            RecoveryJob.status.in_(["queued", "attention"]),
+        )
+    ).all()
+    for row in rows:
+        if not row.encrypted_payload:
+            continue
+        try:
+            if decrypt(row.encrypted_payload).get("call_sid") == call_sid:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _finish_call(call):
+    elapsed = max(0, int((now() - call.created_at.replace(tzinfo=now().tzinfo)).total_seconds()))
+    call.billed_minutes = max(call.billed_minutes, min(call.reserved_minutes, (elapsed + 59) // 60))
+    call.status = "completed"
+
+
+def _queue_call_recovery(db, tenant_id, call, kind, reason):
+    if _recovery_exists(db, tenant_id, kind, call.sid):
+        return
+    event = _call_event(db, tenant_id, call.sid)
+    detail = _call_detail(event)
+    db.add(
+        RecoveryJob(
+            tenant_id=tenant_id,
+            customer_id=event.customer_id if event else None,
+            kind=kind,
+            status="attention",
+            due_at=now(),
+            encrypted_payload=encrypt(
+                {
+                    "call_sid": call.sid,
+                    "from": detail.get("from", ""),
+                    "to": detail.get("to", ""),
+                    "reason": reason,
+                }
+            ),
+        )
+    )
+    record_event(
+        db,
+        tenant_id,
+        "call.callback_requested" if kind == "callback_requested" else "call.missed",
+        "voice",
+        call.sid,
+        event.customer_id if event else None,
+        {"reason": reason},
+    )
+
+
+def _whisper_url(call, route):
+    if not route.get("whisper"):
+        return ""
+    return settings.public_url + "/webhooks/twilio/voice-whisper?call=" + call.sid
+
+
+def _next_chain(route, first):
+    return [first] + [step for step in route.get("never_miss", []) if step != first]
+
+
+def _never_miss_xml(db, tenant, number, call, route, step=0):
+    chain = route.get("never_miss") or []
+    event = _call_event(db, tenant.id, call.sid)
+    for index in range(step, len(chain)):
+        action = chain[index]
+        if action == "fallback":
+            fallback = route.get("fallback", "")
+            if not fallback or fallback == call.destination:
+                continue
+            call.destination = fallback
+            call.status = "routing_fallback"
+            return dial_xml(
+                fallback,
+                call.reserved_minutes,
+                settings.public_url + "/webhooks/twilio/voice-never-miss?step=" + str(index + 1),
+                route.get("ring_seconds", 20),
+                _whisper_url(call, route),
+            )
+        if action == "ai":
+            if route.get("fallback"):
+                call.destination = route["fallback"]
+            xml = start_voice(db, tenant, number, call)
+            if xml:
+                call.status = "ai"
+                record_event(
+                    db, tenant.id, "call.ai_fallback", "voice", call.sid,
+                    event.customer_id if event else None, {},
+                )
+                return xml
+            continue
+        if action == "callback":
+            _queue_call_recovery(db, tenant.id, call, "callback_requested", "never_miss")
+            _finish_call(call)
+            return callback_xml(route)
+        if action == "voicemail":
+            call.status = "voicemail"
+            return voicemail_xml(
+                route,
+                settings.public_url + "/webhooks/twilio/voice-voicemail-finished",
+                settings.public_url + "/webhooks/twilio/voice-voicemail-recording",
+                settings.public_url + "/webhooks/twilio/voice-voicemail-transcription",
+            )
+    _queue_call_recovery(db, tenant.id, call, "missed_call", "never_miss_exhausted")
+    _finish_call(call)
+    return unavailable_xml()
+
+
+def _direct_action_xml(db, tenant, number, call, route, action):
+    if action == "closed":
+        _queue_call_recovery(db, tenant.id, call, "missed_call", "closed")
+        _finish_call(call)
+        return unavailable_xml("This business is currently closed. Please try again later.")
+    scoped = dict(route)
+    scoped["never_miss"] = _next_chain(route, action)
+    return _never_miss_xml(db, tenant, number, call, scoped, 0)
+
+
 @app.post("/webhooks/twilio/voice")
 async def voice(request: Request):
     tenant_id, p = await validate_twilio(request)
@@ -673,6 +830,7 @@ async def voice(request: Request):
         if call and (not n or call.tenant_id != t.id or call.number_id != n.id):
             raise HTTPException(409, "Call ownership mismatch")
         minutes = call.reserved_minutes if call else 0
+        customer_id = None
         if allowed and not call:
             month = now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             calls = db.scalars(select(Call).where(Call.tenant_id == t.id, Call.created_at >= month)).all()
@@ -680,7 +838,7 @@ async def voice(request: Request):
             minutes = min(10, max(0, settings.voice_monthly_minutes - committed))
             allowed = minutes > 0 and within_budget(tenant_client(t), t)
             if allowed:
-                destination = route["fallback"] if route else n.forwarding
+                destination = "" if route else n.forwarding
                 call = Call(sid=sid, tenant_id=t.id, number_id=n.id, destination=destination, reserved_minutes=minutes)
                 db.add(call)
                 caller = p.get("From", "")
@@ -696,10 +854,28 @@ async def voice(request: Request):
                 )
         elif call and call.status == "completed":
             allowed = False
+
         if allowed and minutes:
             if route:
-                call.status = "menu"
-                xml = menu_xml(route, settings.public_url + "/webhooks/twilio/voice-menu")
+                action = initial_action(route)
+                event = _call_event(db, t.id, call.sid)
+                customer_id = event.customer_id if event else customer_id
+                brief = caller_brief(db, t.id, _call_detail(event).get("from", "")) if customer_id else {"known": False}
+                if action == "menu" and brief.get("known") and brief.get("vip") and route.get("vip_destination"):
+                    call.destination = route["vip_destination"]
+                    call.status = "routing_vip"
+                    xml = dial_xml(
+                        route["vip_destination"],
+                        minutes,
+                        settings.public_url + "/webhooks/twilio/voice-never-miss?step=0",
+                        route.get("ring_seconds", 20),
+                        _whisper_url(call, route),
+                    )
+                elif action == "menu":
+                    call.status = "menu"
+                    xml = menu_xml(route, settings.public_url + "/webhooks/twilio/voice-menu")
+                else:
+                    xml = _direct_action_xml(db, t, n, call, route, action)
             else:
                 ai_xml = start_voice(db, t, n, call) if ai_allowed else None
                 xml = dial_xml(call.destination, minutes, settings.public_url + "/webhooks/twilio/voice-status", 20)
@@ -722,25 +898,24 @@ async def voice_menu(request: Request):
         route = routing_for(db, n) if n else None
         if not route or t.status != "approved" or t.billing_status != "active" or call.status == "completed":
             return Response(unavailable_xml(), media_type="application/xml")
-        destination = selected_destination(route, p.get("Digits", ""))
-        if destination:
-            call.destination = destination
+
+        option = selected_option(route, p.get("Digits", ""))
+        if option and option.get("action") == "dial":
+            members = ordered_members(db, t.id, option)
+            call.destination = members[0]
             call.status = "routing"
-            xml = dial_xml(
-                destination,
+            xml = dial_group_xml(
+                members,
                 call.reserved_minutes,
                 settings.public_url + "/webhooks/twilio/voice-route-result",
-                route["ring_seconds"],
+                route.get("ring_seconds", 20),
+                _whisper_url(call, route),
+                option.get("strategy") != "simultaneous",
             )
+        elif option and option.get("action") in {"ai", "callback", "voicemail"}:
+            xml = _direct_action_xml(db, t, n, call, route, option["action"])
         elif call.status == "menu_retry":
-            call.destination = route["fallback"]
-            call.status = "routing_fallback"
-            xml = dial_xml(
-                route["fallback"],
-                call.reserved_minutes,
-                settings.public_url + "/webhooks/twilio/voice-status",
-                route["ring_seconds"],
-            )
+            xml = _never_miss_xml(db, t, n, call, route, 0)
         else:
             call.status = "menu_retry"
             xml = menu_xml(
@@ -771,20 +946,160 @@ async def voice_route_result(request: Request):
         if dial_status == "completed":
             call.billed_minutes = max(call.billed_minutes, (seconds + 59) // 60)
             call.status = "completed"
+            event = _call_event(db, t.id, call.sid)
+            record_event(
+                db, t.id, "call.answered", "voice", call.sid,
+                event.customer_id if event else None, {"duration": seconds},
+            )
             return Response("<Response/>", media_type="application/xml")
-        fallback = route["fallback"]
-        if not fallback or fallback == call.destination:
-            call.status = "completed"
-            return Response(unavailable_xml(), media_type="application/xml")
-        call.destination = fallback
-        call.status = "routing_fallback"
-        xml = dial_xml(
-            fallback,
-            call.reserved_minutes,
-            settings.public_url + "/webhooks/twilio/voice-status",
-            route["ring_seconds"],
-        )
+        xml = _never_miss_xml(db, t, n, call, route, 0)
     return Response(xml, media_type="application/xml")
+
+
+@app.post("/webhooks/twilio/voice-never-miss")
+async def voice_never_miss(request: Request):
+    tenant_id, p = await validate_twilio(request)
+    try:
+        step = max(0, int(request.query_params.get("step", "0")))
+    except ValueError:
+        raise HTTPException(422, "Invalid fallback step") from None
+    with DB.begin() as db:
+        t = db.scalar(select(Tenant).where(Tenant.id == tenant_id).with_for_update())
+        call = db.scalar(select(Call).where(Call.sid == p.get("CallSid", ""), Call.tenant_id == t.id).with_for_update())
+        if not call:
+            raise HTTPException(404, "Call not found")
+        n = db.scalar(select(Number).where(Number.id == call.number_id, Number.tenant_id == t.id))
+        route = routing_for(db, n) if n else None
+        if not route or t.status != "approved" or t.billing_status != "active":
+            return Response(unavailable_xml(), media_type="application/xml")
+        dial_status = p.get("DialCallStatus", "")
+        try:
+            seconds = max(0, int(p.get("DialCallDuration", "0")))
+        except ValueError:
+            raise HTTPException(422, "Invalid call duration")
+        if dial_status == "completed":
+            call.billed_minutes = max(call.billed_minutes, (seconds + 59) // 60)
+            call.status = "completed"
+            event = _call_event(db, t.id, call.sid)
+            record_event(
+                db, t.id, "call.answered", "voice", call.sid,
+                event.customer_id if event else None, {"duration": seconds, "fallback": True},
+            )
+            return Response("<Response/>", media_type="application/xml")
+        xml = _never_miss_xml(db, t, n, call, route, step)
+    return Response(xml, media_type="application/xml")
+
+
+@app.post("/webhooks/twilio/voice-whisper")
+async def voice_whisper(request: Request):
+    tenant_id, _ = await validate_twilio(request)
+    call_sid = request.query_params.get("call", "")
+    with DB.begin() as db:
+        call = db.scalar(select(Call).where(Call.sid == call_sid, Call.tenant_id == tenant_id))
+        if not call:
+            raise HTTPException(404, "Call not found")
+        event = _call_event(db, tenant_id, call.sid)
+        detail = _call_detail(event)
+        brief = caller_brief(db, tenant_id, detail.get("from", "")) if event and event.customer_id else {"known": False}
+        if not brief.get("known"):
+            text = "Incoming Raeburn Connect business call."
+        else:
+            parts = ["Incoming call from a known customer."]
+            if brief.get("vip"):
+                parts.append("VIP customer.")
+            if brief.get("owner"):
+                parts.append("Relationship owner " + brief["owner"] + ".")
+            if brief.get("summary"):
+                parts.append(brief["summary"])
+            if brief.get("open_promises"):
+                parts.append(str(brief["open_promises"]) + " open promises.")
+            if brief.get("next_best_action"):
+                parts.append("Suggested next action: " + brief["next_best_action"])
+            text = " ".join(parts)
+        record_event(
+            db, tenant_id, "call.briefed", "voice", call.sid,
+            event.customer_id if event else None, {},
+        )
+    return Response(whisper_xml(text), media_type="application/xml")
+
+
+@app.post("/webhooks/twilio/voice-voicemail-finished")
+async def voice_voicemail_finished(request: Request):
+    tenant_id, p = await validate_twilio(request)
+    with DB.begin() as db:
+        call = db.scalar(select(Call).where(Call.sid == p.get("CallSid", ""), Call.tenant_id == tenant_id).with_for_update())
+        if not call:
+            raise HTTPException(404, "Call not found")
+        _finish_call(call)
+    return Response("<Response><Say>Thank you. Your message has been saved.</Say></Response>", media_type="application/xml")
+
+
+@app.post("/webhooks/twilio/voice-voicemail-recording")
+async def voice_voicemail_recording(request: Request):
+    tenant_id, p = await validate_twilio(request)
+    with DB.begin() as db:
+        call = db.scalar(select(Call).where(Call.sid == p.get("CallSid", ""), Call.tenant_id == tenant_id))
+        if not call:
+            raise HTTPException(404, "Call not found")
+        event = _call_event(db, tenant_id, call.sid)
+        duration = p.get("RecordingDuration", "0")
+        record_event(
+            db,
+            tenant_id,
+            "voicemail.recorded",
+            "voice",
+            p.get("RecordingSid", "") or call.sid,
+            event.customer_id if event else None,
+            {
+                "call_sid": call.sid,
+                "recording_sid": p.get("RecordingSid", ""),
+                "duration": duration,
+                "status": p.get("RecordingStatus", ""),
+            },
+        )
+        if not _recovery_exists(db, tenant_id, "voicemail", call.sid):
+            db.add(
+                RecoveryJob(
+                    tenant_id=tenant_id,
+                    customer_id=event.customer_id if event else None,
+                    kind="voicemail",
+                    status="attention",
+                    due_at=now(),
+                    encrypted_payload=encrypt(
+                        {
+                            "call_sid": call.sid,
+                            "recording_sid": p.get("RecordingSid", ""),
+                            "duration": duration,
+                        }
+                    ),
+                )
+            )
+    return Response(status_code=204)
+
+
+@app.post("/webhooks/twilio/voice-voicemail-transcription")
+async def voice_voicemail_transcription(request: Request):
+    tenant_id, p = await validate_twilio(request)
+    with DB.begin() as db:
+        call = db.scalar(select(Call).where(Call.sid == p.get("CallSid", ""), Call.tenant_id == tenant_id))
+        if not call:
+            raise HTTPException(404, "Call not found")
+        event = _call_event(db, tenant_id, call.sid)
+        text = p.get("TranscriptionText", "")[:8000]
+        record_event(
+            db,
+            tenant_id,
+            "voicemail.transcribed",
+            "voice",
+            p.get("TranscriptionSid", "") or call.sid,
+            event.customer_id if event else None,
+            {
+                "call_sid": call.sid,
+                "status": p.get("TranscriptionStatus", ""),
+                "transcript": text,
+            },
+        )
+    return Response(status_code=204)
 
 
 @app.post("/webhooks/twilio/voice-status")

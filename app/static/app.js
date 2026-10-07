@@ -176,7 +176,9 @@ function renderNumbers() {
 function addCallRouteRow(value = {}) {
   const container = $('#call-route-options');
   if (container.children.length >= 10) return notice('A call menu can have up to 10 choices.');
-  const row = element('div', undefined, 'inline call-route-row');
+  const row = element('div', undefined, 'call-route-row');
+
+  const top = element('div', undefined, 'inline');
   const digitLabel = element('label', 'Key');
   const digit = element('select');
   digit.name = 'route_digit';
@@ -187,7 +189,8 @@ function addCallRouteRow(value = {}) {
     digit.append(option);
   }
   digitLabel.append(digit);
-  const nameLabel = element('label', 'Team or person');
+
+  const nameLabel = element('label', 'Team or choice');
   const name = element('input');
   name.name = 'route_label';
   name.maxLength = 60;
@@ -195,17 +198,60 @@ function addCallRouteRow(value = {}) {
   name.placeholder = 'Sales';
   name.value = value.label || '';
   nameLabel.append(name);
-  const phoneLabel = element('label', 'Phone or mobile');
+
+  const actionLabel = element('label', 'What happens');
+  const action = element('select');
+  action.name = 'route_action';
+  const actions = [
+    ['dial','Ring people'],
+    ['ai','AI receptionist'],
+    ['callback','Take callback request'],
+    ['voicemail','Take voicemail'],
+  ];
+  for (const [key,label] of actions) {
+    const option = element('option', label);
+    option.value = key;
+    if ((value.action || 'dial') === key) option.selected = true;
+    action.append(option);
+  }
+  actionLabel.append(action);
+  top.append(digitLabel, nameLabel, actionLabel);
+
+  const dialSettings = element('div', undefined, 'inline route-dial-settings');
+  const phoneLabel = element('label', 'Phones or mobiles');
   const phone = element('input');
-  phone.name = 'route_destination';
-  phone.type = 'tel';
-  phone.required = true;
-  phone.pattern = '\\+44[0-9]{9,10}';
-  phone.placeholder = '+447700900000';
-  phone.value = value.destination || '';
+  phone.name = 'route_destinations';
+  phone.placeholder = '+447700900001, +447700900002';
+  phone.value = (value.destinations || (value.destination ? [value.destination] : [])).join(', ');
   phoneLabel.append(phone);
-  const remove = button('Remove', () => { row.remove(); }, true);
-  row.append(digitLabel, nameLabel, phoneLabel, remove);
+
+  const strategyLabel = element('label', 'Ring style');
+  const strategy = element('select');
+  strategy.name = 'route_strategy';
+  const strategies = [
+    ['simultaneous','Ring everyone together'],
+    ['sequential','Ring in order'],
+    ['priority','Priority order'],
+    ['longest_idle','Longest idle first'],
+  ];
+  for (const [key,label] of strategies) {
+    const option = element('option', label);
+    option.value = key;
+    if ((value.strategy || 'simultaneous') === key) option.selected = true;
+    strategy.append(option);
+  }
+  strategyLabel.append(strategy);
+  dialSettings.append(phoneLabel, strategyLabel);
+
+  const remove = button('Remove choice', () => { row.remove(); }, true);
+  const refresh = () => {
+    const isDial = action.value === 'dial';
+    dialSettings.hidden = !isDial;
+    phone.required = isDial;
+  };
+  action.onchange = refresh;
+  refresh();
+  row.append(top, dialSettings, remove);
   container.append(row);
 }
 
@@ -218,12 +264,31 @@ async function loadCallRouting() {
   form.elements.greeting.value = config.greeting || '';
   form.elements.fallback.value = config.fallback || '';
   form.elements.ring_seconds.value = String(config.ring_seconds || 20);
+  form.elements.whisper.checked = config.whisper !== false;
+  form.elements.vip_destination.value = config.vip_destination || '';
+  form.elements.emergency_mode.value = config.emergency_mode || 'normal';
+  form.elements.voicemail_greeting.value = config.voicemail_greeting || '';
+  form.elements.transcribe_voicemail.checked = Boolean(config.transcribe_voicemail);
+  form.elements.callback_message.value = config.callback_message || '';
+
+  const hours = config.business_hours || {};
+  form.elements.hours_enabled.checked = Boolean(hours.enabled);
+  form.elements.hours_timezone.value = hours.timezone || 'Europe/London';
+  form.elements.hours_weekdays.value = (hours.weekdays || [0,1,2,3,4]).join(',');
+  form.elements.hours_opens.value = hours.opens || '09:00';
+  form.elements.hours_closes.value = hours.closes || '17:00';
+  form.elements.hours_holidays.value = (hours.holidays || []).join(', ');
+  form.elements.after_hours.value = hours.after_hours || 'fallback';
+
+  const chain = config.never_miss || ['fallback','ai','callback'];
+  for (let i = 1; i <= 4; i++) form.elements['never_miss_' + i].value = chain[i - 1] || '';
+
   $('#call-route-options').replaceChildren();
   for (const option of (config.options || [])) addCallRouteRow(option);
   if (!(config.options || []).length) {
-    addCallRouteRow({digit:'1', label:'Sales', destination:''});
-    addCallRouteRow({digit:'2', label:'Accounts', destination:''});
-    addCallRouteRow({digit:'0', label:'Operator', destination:''});
+    addCallRouteRow({digit:'1', label:'Sales', action:'dial', destinations:[]});
+    addCallRouteRow({digit:'2', label:'Accounts', action:'dial', destinations:[]});
+    addCallRouteRow({digit:'0', label:'Operator', action:'dial', destinations:[]});
   }
 }
 
@@ -234,21 +299,62 @@ $('#call-routing-form').onsubmit = e => {
   act(async () => {
     const form = e.target;
     const rows = [...$('#call-route-options').querySelectorAll('.call-route-row')];
-    const options = rows.map(row => ({
-      digit: row.querySelector('[name="route_digit"]').value,
-      label: row.querySelector('[name="route_label"]').value.trim(),
-      destination: row.querySelector('[name="route_destination"]').value.trim(),
-    })).filter(item => item.label || item.destination);
+    const options = rows.map(row => {
+      const action = row.querySelector('[name="route_action"]').value;
+      const destinations = row.querySelector('[name="route_destinations"]').value
+        .split(',')
+        .map(value => value.trim())
+        .filter(Boolean);
+      return {
+        digit: row.querySelector('[name="route_digit"]').value,
+        label: row.querySelector('[name="route_label"]').value.trim(),
+        action,
+        destination: destinations[0] || '',
+        destinations: action === 'dial' ? destinations : [],
+        strategy: row.querySelector('[name="route_strategy"]').value,
+      };
+    }).filter(item => item.label);
+
+    const neverMiss = [];
+    for (let i = 1; i <= 4; i++) {
+      const value = form.elements['never_miss_' + i].value;
+      if (value && !neverMiss.includes(value)) neverMiss.push(value);
+    }
+    const weekdays = form.elements.hours_weekdays.value
+      .split(',')
+      .map(value => Number(value.trim()))
+      .filter(value => Number.isInteger(value));
+    const holidays = form.elements.hours_holidays.value
+      .split(/[\n,]+/)
+      .map(value => value.trim())
+      .filter(Boolean);
+
     await api('/api/numbers/' + $('#call-routing-number').value + '/call-routing', 'PUT', {
       enabled: form.elements.enabled.checked,
       greeting: form.elements.greeting.value,
       fallback: form.elements.fallback.value.trim(),
       ring_seconds: Number(form.elements.ring_seconds.value),
       options,
+      business_hours: {
+        enabled: form.elements.hours_enabled.checked,
+        timezone: form.elements.hours_timezone.value.trim(),
+        weekdays,
+        opens: form.elements.hours_opens.value,
+        closes: form.elements.hours_closes.value,
+        holidays,
+        after_hours: form.elements.after_hours.value,
+      },
+      emergency_mode: form.elements.emergency_mode.value,
+      never_miss: neverMiss,
+      vip_destination: form.elements.vip_destination.value.trim(),
+      whisper: form.elements.whisper.checked,
+      voicemail_greeting: form.elements.voicemail_greeting.value,
+      transcribe_voicemail: form.elements.transcribe_voicemail.checked,
+      callback_message: form.elements.callback_message.value,
     });
     notice(form.elements.enabled.checked
-      ? 'Call menu saved. Incoming callers will hear it when your telephone service is active.'
-      : 'Call menu saved and switched off. Simple forwarding will be used instead.');
+      ? 'Never-Miss routing saved. Your live number will follow this call flow.'
+      : 'Advanced routing is off. Simple call forwarding will be used instead.');
     await loadCallRouting();
   });
 };
