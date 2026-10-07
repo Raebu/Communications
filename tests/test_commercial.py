@@ -184,7 +184,7 @@ def test_email_delivery_uses_sender_and_support_reply_to(monkeypatch):
     monkeypatch.setattr(settings, 'email_from', 'newphoneline@example.com')
     monkeypatch.setattr(settings, 'email_reply_to', 'support@example.com')
     smtp = MagicMock()
-    monkeypatch.setattr('app.worker.smtplib.SMTP_SSL', smtp)
+    monkeypatch.setattr('app.email_delivery.smtplib.SMTP_SSL', smtp)
     with DB.begin() as db:
         db.add(EmailJob(recipient='review@example.com', encrypted_payload=encrypt({
             'from': 'verification@example.com', 'subject': 'Review', 'body': 'Please review',
