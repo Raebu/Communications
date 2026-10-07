@@ -244,7 +244,37 @@ $('#company-verification-form').onsubmit = e => {e.preventDefault();act(async()=
   notice('Thank you — your secure verification has started. Check your business email and add the DNS record shown below.');
 });};
 $('#company-verification-retry').onclick = ()=>act(async()=>{await api('/api/company-verification/retry','POST');await loadCompanyVerification();notice('Verification checks restarted. Your existing TXT record remains valid.');});
-$('#company-identity').onclick = ()=>act(async()=>{const result=await api('/api/company-verification/identity','POST');const target=new URL(result.url);if(target.protocol!=='https:'||target.hostname!=='verify.stripe.com')throw Error('Unexpected identity provider address');location.assign(target.href);});
+let identityHandoffUrl = '';
+function mobileIdentityDevice() {
+  if (navigator.userAgentData?.mobile === true) return true;
+  if (/Android|iPhone|iPod|Mobile/i.test(navigator.userAgent)) return true;
+  return navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+}
+function closeIdentityHandoff() {
+  identityHandoffUrl = '';
+  $('#identity-handoff-qr').removeAttribute('src');
+  if ($('#identity-handoff').open) $('#identity-handoff').close();
+}
+$('#identity-handoff-close').onclick = closeIdentityHandoff;
+$('#identity-handoff-cancel').onclick = closeIdentityHandoff;
+$('#identity-handoff-open').onclick = () => {
+  if (!identityHandoffUrl) return;
+  const target = new URL(identityHandoffUrl);
+  if (target.protocol !== 'https:' || target.hostname !== 'verify.stripe.com') return notice('Unexpected identity provider address');
+  location.assign(target.href);
+};
+$('#company-identity').onclick = ()=>act(async()=>{
+  const result=await api('/api/company-verification/identity','POST');
+  const target=new URL(result.url);
+  if(target.protocol!=='https:'||target.hostname!=='verify.stripe.com')throw Error('Unexpected identity provider address');
+  if (mobileIdentityDevice()) {
+    location.assign(target.href);
+    return;
+  }
+  identityHandoffUrl = target.href;
+  $('#identity-handoff-qr').src = '/api/company-verification/identity-qr?ts=' + Date.now();
+  $('#identity-handoff').showModal();
+});
 const companyProofToken = actionParams.get('company_proof');
 if(companyProofToken){
   history.replaceState(null,'',location.pathname);
