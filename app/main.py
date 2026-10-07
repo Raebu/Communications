@@ -1082,6 +1082,40 @@ async def voice(request: Request):
     return Response(xml, media_type="application/xml")
 
 
+@app.post("/webhooks/twilio/voice-human-fallback")
+async def voice_human_fallback(request: Request):
+    tenant_id, _ = await validate_twilio(request)
+    with DB.begin() as db:
+        t = db.scalar(select(Tenant).where(Tenant.id == tenant_id).with_for_update())
+        call = db.scalar(
+            select(Call).where(
+                Call.sid == (await request.form()).get("CallSid", ""),
+                Call.tenant_id == t.id,
+            ).with_for_update()
+        )
+        if not call:
+            raise HTTPException(404, "Call not found")
+        n = db.scalar(select(Number).where(Number.id == call.number_id, Number.tenant_id == t.id))
+        if (
+            not n
+            or not call.destination
+            or call.status == "completed"
+            or t.status != "approved"
+            or t.billing_status != "active"
+        ):
+            return Response(unavailable_xml(), media_type="application/xml")
+        xml = _human_dial_xml(
+            db,
+            t,
+            n,
+            call,
+            [call.destination],
+            settings.public_url + "/webhooks/twilio/voice-status",
+            20,
+        )
+    return Response(xml, media_type="application/xml")
+
+
 @app.post("/webhooks/twilio/voice-menu")
 async def voice_menu(request: Request):
     tenant_id, p = await validate_twilio(request)
