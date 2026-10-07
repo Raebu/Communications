@@ -92,7 +92,7 @@ async function loadMessages() {
 $('#send-form').onsubmit = e => { e.preventDefault(); act(async () => { const data=fields(e.target); data.consent_confirmed=Boolean(data.consent_confirmed); data.request_key=crypto.randomUUID();data.channel=selected?.channel||"sms"; await api('/api/messages','POST',data); selected={number_id:data.number_id,peer:data.peer,channel:data.channel}; e.target.elements.body.value=''; await loadThreads(); await loadMessages(); notice('Message queued for delivery.'); }); };
 async function loadAdmin() {
   const tenants=await api('/api/admin/tenants'); $('#admin-customers').replaceChildren();
-  for (const t of tenants) { const card=element('article',undefined,'customer'); card.append(element('h2',t.name),element('p',`${t.legal_name} · ${t.address} · ${t.status} · billing ${t.billing_status}`)); if (!t.connected) card.append(button('Connect Twilio subaccount',async()=>{await api(`/api/admin/tenants/${t.id}/connect`,'POST');await loadAdmin();}));
+  for (const t of tenants) { const card=element('article',undefined,'customer'); card.append(element('h2',t.name),element('p',`${t.legal_name} · ${t.address} · ${t.status} · billing ${t.billing_status}`)); if (!t.connected) card.append(button('Connect communications account',async()=>{await api(`/api/admin/tenants/${t.id}/connect`,'POST');await loadAdmin();}));
     const form=element('form'); const bundle=element('input'); bundle.placeholder='Approved BU bundle SID'; bundle.required=true; const address=element('input'); address.placeholder='AD address SID (where required)'; const type=element('select'); for (const v of ['Local','Mobile','TollFree']) type.append(element('option',v)); const submit=element('button','Verify bundle and approve'); submit.type='submit'; form.append(bundle,address,type,submit); form.onsubmit=e=>{e.preventDefault();act(async()=>{await api(`/api/admin/tenants/${t.id}/approve`,'POST',{bundle_sid:bundle.value,address_sid:address.value,type:type.value});await loadAdmin();});}; card.append(form); $('#admin-customers').append(card); }
 }
 if (!new URLSearchParams(location.search).get('token')) api('/api/me').then(load).catch(()=>{});
@@ -230,7 +230,7 @@ async function loadCompanyVerification() {
     if (value.telephone_authorized && !telephoneComplete) {
       $('#company-telephone-readiness').textContent = 'Telephone approval has started. We are reviewing the regulatory bundle; this page will update automatically.';
     } else if (!telephoneComplete) {
-      $('#company-telephone-readiness').textContent = 'Before anything is submitted, Raeburn Connect can check Twilio’s current UK requirements against your verified company data without creating a regulatory bundle.';
+      $('#company-telephone-readiness').textContent = 'Before anything is submitted, Raeburn Connect can check the current UK telephone requirements against your verified company data without creating a regulatory bundle.';
     }
   }
 
@@ -260,7 +260,7 @@ $('#company-telephone-preflight').onclick = () => act(async () => {
     const result = await api('/api/company-verification/telephone-preflight', 'POST');
     telephonePreflightReady = Boolean(result.ready);
     $('#company-telephone-readiness').textContent =
-      'Ready for Twilio submission. Verified UK company data, registered address and director contact mobile satisfy the current ' +
+      'Ready for telephone approval. Verified UK company data, registered address and director contact mobile satisfy the current ' +
       result.number_type + ' business-number requirements. No regulatory bundle has been created yet.';
     $('#company-telephone-start').hidden = !telephonePreflightReady;
   } finally {
@@ -281,7 +281,7 @@ $('#company-telephone-start').onclick = () => act(async () => {
         ? 'Telephone approval is complete.'
         : 'Telephone approval has started. We are reviewing the regulatory bundle; this page will update automatically.';
     await loadCompanyVerification();
-    notice('Telephone approval started. Raeburn Connect will keep checking Twilio for the result.');
+    notice('Telephone approval started. Raeburn Connect will keep checking for the result.');
   } finally {
     button.disabled = false;
   }
