@@ -1,5 +1,4 @@
 """Customer-configurable inbound call menus and routing."""
-import re
 from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Depends, HTTPException
