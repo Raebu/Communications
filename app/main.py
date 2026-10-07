@@ -24,6 +24,7 @@ from .call_routing import (
     unavailable_xml,
     selected_option,
     ordered_members,
+    customer_destination,
     initial_action,
     voicemail_xml,
     callback_xml,
@@ -1129,6 +1130,35 @@ async def voice(request: Request):
                         n,
                         call,
                         [route["vip_destination"]],
+                        settings.public_url + "/webhooks/twilio/voice-never-miss?step=0",
+                        route.get("ring_seconds", 20),
+                        _whisper_url(call, route),
+                    )
+                elif action == "menu" and customer_destination(route, brief):
+                    destination = customer_destination(route, brief)
+                    call.destination = destination
+                    call.status = "routing_customer"
+                    record_event(
+                        db,
+                        t.id,
+                        "call.customer_routed",
+                        "voice",
+                        call.sid + ":customer-route",
+                        event.customer_id if event else None,
+                        {
+                            "destination": destination,
+                            "owner": brief.get("owner", ""),
+                            "open_promises": brief.get("open_promises", 0),
+                            "risk_score": brief.get("risk_score", 0),
+                            "revenue_signal": brief.get("revenue_signal", 0),
+                        },
+                    )
+                    xml = _human_dial_xml(
+                        db,
+                        t,
+                        n,
+                        call,
+                        [destination],
                         settings.public_url + "/webhooks/twilio/voice-never-miss?step=0",
                         route.get("ring_seconds", 20),
                         _whisper_url(call, route),
