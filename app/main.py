@@ -709,6 +709,12 @@ def _recovery_exists(db, tenant_id, kind, call_sid):
     return False
 
 
+def _finish_call(call):
+    elapsed = max(0, int((now() - call.created_at.replace(tzinfo=now().tzinfo)).total_seconds()))
+    call.billed_minutes = max(call.billed_minutes, min(call.reserved_minutes, (elapsed + 59) // 60))
+    call.status = "completed"
+
+
 def _queue_call_recovery(db, tenant_id, call, kind, reason):
     if _recovery_exists(db, tenant_id, kind, call.sid):
         return
@@ -784,7 +790,7 @@ def _never_miss_xml(db, tenant, number, call, route, step=0):
             continue
         if action == "callback":
             _queue_call_recovery(db, tenant.id, call, "callback_requested", "never_miss")
-            call.status = "callback_requested"
+            _finish_call(call)
             return callback_xml(route)
         if action == "voicemail":
             call.status = "voicemail"
@@ -795,14 +801,14 @@ def _never_miss_xml(db, tenant, number, call, route, step=0):
                 settings.public_url + "/webhooks/twilio/voice-voicemail-transcription",
             )
     _queue_call_recovery(db, tenant.id, call, "missed_call", "never_miss_exhausted")
-    call.status = "completed"
+    _finish_call(call)
     return unavailable_xml()
 
 
 def _direct_action_xml(db, tenant, number, call, route, action):
     if action == "closed":
         _queue_call_recovery(db, tenant.id, call, "missed_call", "closed")
-        call.status = "completed"
+        _finish_call(call)
         return unavailable_xml("This business is currently closed. Please try again later.")
     scoped = dict(route)
     scoped["never_miss"] = _next_chain(route, action)
@@ -1024,9 +1030,7 @@ async def voice_voicemail_finished(request: Request):
         call = db.scalar(select(Call).where(Call.sid == p.get("CallSid", ""), Call.tenant_id == tenant_id).with_for_update())
         if not call:
             raise HTTPException(404, "Call not found")
-        elapsed = max(0, int((now() - call.created_at.replace(tzinfo=now().tzinfo)).total_seconds()))
-        call.billed_minutes = max(call.billed_minutes, min(call.reserved_minutes, (elapsed + 59) // 60))
-        call.status = "completed"
+        _finish_call(call)
     return Response("<Response><Say>Thank you. Your message has been saved.</Say></Response>", media_type="application/xml")
 
 
