@@ -36,3 +36,53 @@ def test_text_import_is_draft_and_does_not_execute_html(setup_ai):
     with DB() as db:
         assert not db.get(Knowledge, result.json()["id"]).approved
     assert c.post("/api/knowledge/import", headers=HEADERS, files={"file": ("bad.pdf", b"not a pdf", "application/pdf")}).status_code == 422
+
+
+def test_quality_guardian_can_pause_immediately_on_forbidden_content(setup_ai, monkeypatch):
+    c, t, n = setup_ai
+    data = {
+        "enabled": True,
+        "minimum_pass_rate": 100,
+        "max_latency_ms": 8000,
+        "pause_after_failures": 5,
+        "pause_on_forbidden": True,
+        "cases": [
+            {
+                "question": "What warranty do you offer?",
+                "expected_terms": [],
+                "forbidden_terms": ["guaranteed refund"],
+            }
+        ],
+    }
+    assert c.put("/api/ai/quality-schedule", headers=HEADERS, json=data).status_code == 200
+    monkeypatch.setattr(ai, "generate", lambda *a: "You have a guaranteed refund.")
+    assert scheduled_one()
+    with DB() as db:
+        assert db.get(AIProfile, t).paused is True
+    report = c.get("/api/ai/quality-schedule").json()
+    assert report["last_result"]["forbidden_failures"] == 1
+    assert report["policy"]["pause_after_failures"] == 5
+
+
+def test_quality_guardian_allows_configured_pass_rate(setup_ai, monkeypatch):
+    c, t, n = setup_ai
+    data = {
+        "enabled": True,
+        "minimum_pass_rate": 50,
+        "pause_after_failures": 3,
+        "pause_on_forbidden": False,
+        "cases": [
+            {"question": "Hours?", "expected_terms": ["9"], "forbidden_terms": []},
+            {"question": "Price?", "expected_terms": ["£10"], "forbidden_terms": []},
+        ],
+    }
+    assert c.put("/api/ai/quality-schedule", headers=HEADERS, json=data).status_code == 200
+    replies = iter(["Open at 9", "Please contact us"])
+    monkeypatch.setattr(ai, "generate", lambda *a: next(replies))
+    assert scheduled_one()
+    with DB() as db:
+        assert db.get(AIProfile, t).paused is False
+        assert db.get(EvaluationSchedule, t).failures == 0
+    report = c.get("/api/ai/quality-schedule").json()
+    assert report["last_result"]["pass_rate"] == 50
+    assert report["last_result"]["passed"] is True
