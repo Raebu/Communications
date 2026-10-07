@@ -444,21 +444,64 @@ def test_identity_qr_uses_one_time_mobile_handoff_and_fresh_stripe_url(configure
         metadata=StripeLike(attempt=attempt, tenant_id=tid),
         livemode=True,
         url="https://verify.stripe.com/fresh-mobile-session",
+        client_secret="vs_client_secret_example",
     )
     api = MagicMock()
     api.v1.identity.verification_sessions.retrieve.return_value = session
     monkeypatch.setattr(cv, "identity_client", lambda: api)
+    monkeypatch.setattr(settings, "stripe_publishable_key", "pk_live_example")
 
-    onward = c.post(f"/api/company-verification/identity-mobile/{token}/continue", follow_redirects=False)
-    assert onward.status_code == 303
-    assert onward.headers["location"] == "https://verify.stripe.com/fresh-mobile-session"
+    modal = c.post(f"/api/company-verification/identity-mobile/{token}/modal")
+    assert modal.status_code == 200
+    assert modal.json() == {
+        "mode": "modal",
+        "client_secret": "vs_client_secret_example",
+        "publishable_key": "pk_live_example",
+        "redirect_url": "https://verify.stripe.com/fresh-mobile-session",
+    }
     with DB() as db:
         assert db.get(ActionToken, token_hash).used is True
 
-    reused = c.post(f"/api/company-verification/identity-mobile/{token}/continue", follow_redirects=False)
+    reused = c.post(f"/api/company-verification/identity-mobile/{token}/modal")
     assert reused.status_code == 410
 
 
+
+
+
+def test_identity_mobile_modal_falls_back_to_redirect_without_publishable_key(configured, monkeypatch):
+    class StripeLike:
+        def __init__(self, **values):
+            self.__dict__.update(values)
+        def to_dict_recursive(self):
+            return {k: (v.to_dict_recursive() if hasattr(v, "to_dict_recursive") else v) for k, v in self.__dict__.items()}
+
+    c, tid = applicant()
+    ready_for_identity(c, tid)
+    with DB.begin() as db:
+        proof = db.get(CompanyVerification, tid)
+        proof.identity_session = "vs_live_fallback"
+        attempt = proof.attempt
+        user = db.scalar(select(User).where(User.tenant_id == tid))
+        token = "fallback-token"
+        db.add(ActionToken(token_hash=cv.hashlib.sha256(token.encode()).hexdigest(), user_id=user.id,
+                           purpose="identity_handoff", expires_at=now() + timedelta(minutes=10)))
+
+    session = StripeLike(
+        metadata=StripeLike(attempt=attempt, tenant_id=tid),
+        livemode=True,
+        url="https://verify.stripe.com/fallback-session",
+        client_secret="vs_secret",
+    )
+    api = MagicMock()
+    api.v1.identity.verification_sessions.retrieve.return_value = session
+    monkeypatch.setattr(cv, "identity_client", lambda: api)
+    monkeypatch.setattr(settings, "stripe_publishable_key", "")
+
+    response = c.post(f"/api/company-verification/identity-mobile/{token}/modal")
+    assert response.status_code == 200
+    assert response.json()["mode"] == "redirect"
+    assert response.json()["redirect_url"] == "https://verify.stripe.com/fallback-session"
 
 
 def test_stripe_object_metadata_and_options_are_supported(configured, monkeypatch):
