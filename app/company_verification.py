@@ -485,6 +485,32 @@ def notify_state(db, proof):
     state = proof.status + ':' + proof.reason + ':' + notification_stage
     if state == proof.last_notified:
         return
+
+    # Routine polling and proof progression are shown in the account UI, not emailed.
+    # Email only states that require action, mark completion, or reflect provider approval.
+    noteworthy = (
+        proof.status in {'verified', 'held', 'expired', 'invalidated'}
+        or notification_stage in {'approved', 'pending_provider_approval'}
+        or proof.reason == 'provider_unavailable'
+    )
+    if not noteworthy:
+        proof.last_notified = state
+        return
+
+    # Hard safety cap for status/update emails. Business-email challenge messages
+    # have their own independent resend cap and are not counted here.
+    key = 'verification-notify:' + proof.tenant_id + ':' + now().date().isoformat()
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+    insert = pg_insert if db.bind.dialect.name == 'postgresql' else sqlite_insert
+    db.execute(insert(RateBucket).values(key=key, count=0, expires_at=now() + timedelta(days=2))
+               .on_conflict_do_nothing(index_elements=['key']))
+    budget = db.scalar(select(RateBucket).where(RateBucket.key == key).with_for_update())
+    if budget.count >= 4:
+        proof.last_notified = state
+        return
+    budget.count += 1
+
     user = db.get(User, proof.user_id)
     mail(db, user.email, 'Your company verification update',
          MESSAGES.get(proof.status, MESSAGES['pending']) + '\n\n' + REASONS.get(proof.reason, '')
