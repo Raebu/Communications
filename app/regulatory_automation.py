@@ -1,7 +1,7 @@
 """Reconciled Twilio bundle workflow; query live requirements, never fabricate documents."""
 import json
 from .models import Audit
-from .providers import create_subaccount, tenant_client
+from .providers import create_subaccount, parent_client, tenant_client
 from .security import decrypt
 
 TYPES = {'Local': 'local', 'Mobile': 'mobile', 'TollFree': 'toll-free'}
@@ -27,6 +27,40 @@ def address_fields(company):
             'iso_country': 'GB', 'auto_correct_address': False}
 
 
+def regulation_for(client, proof):
+    rc = client.numbers.v2.regulatory_compliance
+    regs = rc.regulations.list(
+        iso_country='GB',
+        number_type=TYPES[proof.number_type],
+        end_user_type='business',
+        limit=2,
+    )
+    if len(regs) != 1:
+        raise ValueError('provider_requirements')
+    regulation = rc.regulations(regs[0].sid).fetch()
+    if (regulation.iso_country != 'GB' or regulation.number_type != TYPES[proof.number_type]
+            or regulation.end_user_type != 'business'):
+        raise ValueError('provider_requirements')
+    return rc, regulation
+
+
+def end_user_attributes(proof, company):
+    contact = decrypt(proof.encrypted_contact)
+    return {
+        'business_name': company['company_name'],
+        'business_registration_identifier': 'UK:CRN',
+        'business_registration_number': proof.company_number,
+        'business_website': 'https://' + proof.domain,
+        'first_name': contact['first_name'],
+        'last_name': contact['last_name'],
+        'phone_number': contact['phone'],
+        'email': proof.mailbox,
+        'business_identity': 'DIRECT_CUSTOMER',
+        'is_subassigned': 'NO',
+        'comments': '',
+    }, contact
+
+
 def requirements(regulation, attributes):
     if not isinstance(regulation.requirements, dict):
         raise ValueError('provider_requirements')
@@ -50,6 +84,32 @@ def requirements(regulation, attributes):
     return {field: attributes[field] for field in fields}
 
 
+
+def preflight(tenant, proof, company):
+    if not proof.authority_verified or proof.status != 'verified':
+        raise ValueError('provider_requirements')
+    client = parent_client()
+    client.http_client.timeout = 5
+    _, regulation = regulation_for(client, proof)
+    attributes, contact = end_user_attributes(proof, company)
+    required_attributes = requirements(regulation, attributes)
+    address_fields(company)
+    lookup = client.lookups.v2.phone_numbers(contact['phone']).fetch(fields='line_type_intelligence')
+    intelligence = lookup.line_type_intelligence or {}
+    if (not lookup.valid or lookup.phone_number != contact['phone']
+            or intelligence.get('error_code') or intelligence.get('type') != 'mobile'):
+        raise ValueError('provider_requirements')
+    return {
+        'ready': True,
+        'number_type': proof.number_type,
+        'regulation_sid': regulation.sid,
+        'required_fields': sorted(required_attributes),
+        'business_identity': required_attributes.get('business_identity'),
+        'is_subassigned': required_attributes.get('is_subassigned'),
+        'contact_mobile': True,
+        'registered_address': True,
+    }
+
 def advance(db, tenant, proof, company):
     state = json.loads(proof.provider_state or '{}')
     name = 'raeburn-verification:' + proof.attempt
@@ -60,15 +120,8 @@ def advance(db, tenant, proof, company):
         else:
             client = tenant_client(tenant)
             client.http_client.timeout = 5
-            rc = client.numbers.v2.regulatory_compliance
-            regs = rc.regulations.list(iso_country='GB', number_type=TYPES[proof.number_type], end_user_type='business', limit=2)
-            if len(regs) != 1:
-                raise ValueError('provider_requirements')
-            regulation = rc.regulations(regs[0].sid).fetch()
-            if (regulation.iso_country != 'GB' or regulation.number_type != TYPES[proof.number_type]
-                    or regulation.end_user_type != 'business'):
-                raise ValueError('provider_requirements')
-            contact = decrypt(proof.encrypted_contact)
+            rc, regulation = regulation_for(client, proof)
+            attributes, contact = end_user_attributes(proof, company)
             if not state.get('contact_mobile_checked'):
                 lookup = client.lookups.v2.phone_numbers(contact['phone']).fetch(fields='line_type_intelligence')
                 intelligence = lookup.line_type_intelligence or {}
@@ -76,13 +129,6 @@ def advance(db, tenant, proof, company):
                         or intelligence.get('error_code') or intelligence.get('type') != 'mobile'):
                     raise ValueError('provider_requirements')
                 state['contact_mobile_checked'] = True
-            attributes = {
-                'business_name': company['company_name'], 'business_registration_identifier': 'UK:CRN',
-                'business_registration_number': proof.company_number, 'business_website': 'https://' + proof.domain,
-                'first_name': contact['first_name'], 'last_name': contact['last_name'],
-                'phone_number': contact['phone'], 'email': proof.mailbox,
-                'business_identity': 'DIRECT_CUSTOMER', 'is_subassigned': 'YES', 'comments': '',
-            }
             attributes = requirements(regulation, attributes)
             current_requirements = json.dumps(regulation.requirements, sort_keys=True)
             if state.get('requirements') and state['requirements'] != current_requirements:
