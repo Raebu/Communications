@@ -187,11 +187,14 @@ $('#quality-form').onsubmit=e=>{e.preventDefault();act(async()=>{const d=fields(
 
 async function loadCompanyVerification() {
   const value = await api('/api/company-verification');
-  $('#company-verification-status').textContent = value.available ? value.message : 'Secure company verification is being configured. Activation remains subject to verification.';
+  const status = $('#company-verification-status');
+  status.textContent = value.available ? (value.status === 'pending' ? 'Verifying — ' + value.message : value.message) : 'Secure company verification is being configured. Activation remains subject to verification.';
+  status.classList.toggle('checking', value.status === 'pending');
   $('#company-verification-explanation').textContent = value.explanation || '';
-  $('#company-verification-form').hidden = !value.available || !['not_started','expired','invalidated','held'].includes(value.status);
-  $('#company-proof-instructions').hidden = !value.available || !['pending','verified'].includes(value.status);
+  $('#company-verification-form').hidden = !value.available || !['not_started','expired','invalidated'].includes(value.status);
+  $('#company-proof-instructions').hidden = !value.available || !['pending','held','verified'].includes(value.status);
   $('#company-identity').hidden = !value.identity_ready;
+  $('#company-verification-retry').hidden = !value.retryable;
   $('#company-resend-email').hidden = Boolean(value.checks?.business_email) || value.status !== 'pending';
   if (value.checks) {
     const labels = {business_email:'Business email',dns:'Domain control',company_register:'Company register',director_authority:'Director authority'};
@@ -207,6 +210,7 @@ $('#company-verification-form').onsubmit = e => {e.preventDefault();act(async()=
   notice('Thank you — your secure verification has started. Check your business email and add the DNS record shown below.');
 });};
 $('#company-resend-email').onclick = ()=>act(async()=>{await api('/api/company-verification/resend-email','POST');notice('Business email verification link requested.');});
+$('#company-verification-retry').onclick = ()=>act(async()=>{await api('/api/company-verification/retry','POST');await loadCompanyVerification();notice('Verification checks restarted. Your existing TXT record remains valid.');});
 $('#company-identity').onclick = ()=>act(async()=>{const result=await api('/api/company-verification/identity','POST');const target=new URL(result.url);if(target.protocol!=='https:'||target.hostname!=='verify.stripe.com')throw Error('Unexpected identity provider address');location.assign(target.href);});
 const companyProofToken = actionParams.get('company_proof');
 if(companyProofToken){
