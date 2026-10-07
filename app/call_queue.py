@@ -6,7 +6,7 @@ attempt can be made.
 """
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from .config import settings
 from .models import Audit, DB, Number, QueueTicket, Tenant, now
@@ -46,7 +46,10 @@ def queue_hunt_one():
     with DB.begin() as db:
         candidates = db.scalars(
             select(QueueTicket)
-            .where(QueueTicket.status.in_(["waiting", "virtual_waiting"]))
+            .where(
+                QueueTicket.status.in_(["waiting", "virtual_waiting"]),
+                or_(QueueTicket.next_attempt_at.is_(None), QueueTicket.next_attempt_at <= now()),
+            )
             .order_by(QueueTicket.entered_at)
             .with_for_update(skip_locked=True)
             .limit(50)
@@ -106,6 +109,7 @@ def queue_hunt_one():
         ticket.attempts += 1
         ticket.status = "dialing_agent"
         ticket.updated_at = now()
+        ticket.next_attempt_at = None
         ticket.encrypted_payload = encrypt(payload)
         ticket_id = ticket.id
         tenant_id = ticket.tenant_id
