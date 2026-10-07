@@ -15,7 +15,7 @@ from .config import settings
 from .integrations import router as integrations_router
 from .channels import enabled as channel_enabled
 from .call_routing import router as call_routing_router, routing_for, menu_xml, dial_xml, unavailable_xml, selected_destination
-from .customer_os import router as customer_os_router, record_event
+from .customer_os import router as customer_os_router, customer_for_identity, record_event
 from .ai import router as ai_router, start_voice, voice_turn, configured as ai_configured
 from .models import AIProfile, Conversation, CompanyVerification
 from .autonomy import router as autonomy_router, inbound_ai, conversation
@@ -683,14 +683,16 @@ async def voice(request: Request):
                 destination = route["fallback"] if route else n.forwarding
                 call = Call(sid=sid, tenant_id=t.id, number_id=n.id, destination=destination, reserved_minutes=minutes)
                 db.add(call)
+                caller = p.get("From", "")
+                customer_id = customer_for_identity(db, t.id, "phone", caller)
                 record_event(
                     db,
                     t.id,
                     "call.inbound",
                     "voice",
                     sid,
-                    None,
-                    {"from": p.get("From", ""), "to": p.get("To", "")},
+                    customer_id,
+                    {"from": caller, "to": p.get("To", "")},
                 )
         elif call and call.status == "completed":
             allowed = False
