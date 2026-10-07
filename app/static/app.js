@@ -190,7 +190,7 @@ async function loadCompanyVerification() {
   const status = $('#company-verification-status');
   const checks = value.checks || {};
   const prerequisiteProofs = Boolean(checks.business_email && checks.dns && checks.company_register);
-  const awaitingDirector = value.status === 'pending' && prerequisiteProofs && !checks.director_authority;
+  const awaitingDirector = prerequisiteProofs && !checks.director_authority && (value.status === 'pending' || value.identity_retry);
 
   status.classList.remove('checking');
   if (!value.available) {
@@ -207,9 +207,11 @@ async function loadCompanyVerification() {
   }
 
   $('#company-verification-explanation').textContent = value.explanation || '';
+  $('#company-verification-stage').textContent = value.stage ? `Stage ${value.stage} of ${value.stage_total} — ${value.stage_label}` : '';
   $('#company-verification-form').hidden = !value.available || !['not_started','expired','invalidated'].includes(value.status);
   $('#company-proof-instructions').hidden = !value.available || !['pending','held','verified'].includes(value.status);
   $('#company-identity').hidden = !value.identity_ready;
+  $('#company-identity').textContent = value.identity_retry ? 'Retry director identity securely' : 'Verify director identity securely';
   $('#company-verification-retry').hidden = !value.retryable;
 
   if (value.checks) {

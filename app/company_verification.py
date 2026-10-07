@@ -49,7 +49,8 @@ REASONS = {
     'provider_unavailable': 'A verification service is temporarily unavailable. We will retry automatically.',
     'provider_requirements': 'The telephone provider needs information outside the supported automated requirements. Activation remains on hold.',
     'provider_rejected': 'The telephone provider has not approved this application. Activation remains on hold.',
-    'provider_uncertain': 'A provider request has an uncertain result. It will not be repeated automatically.',
+    'provider_uncertain': 'The director identity provider returned an uncertain result. Your company checks remain verified and the identity step can be retried safely.',
+    'identity_configuration': 'The director identity service rejected the request before verification could start. Check the Stripe Identity API key permissions/configuration, then retry this step.',
 }
 
 
@@ -223,16 +224,33 @@ def status(user=Depends(current_user)):
         if not proof:
             return {'available': settings.company_verification_enabled, 'status': 'not_started',
                     'message': 'Protect your company by verifying its domain and a current director.'}
+        prerequisites = proof.email_verified and proof.dns_verified and proof.registry_verified
+        identity_retry = proof.status == 'held' and proof.reason in {'provider_uncertain', 'identity_configuration'}
+        if proof.authority_verified:
+            stage, stage_label = 5, 'Director identity verified'
+        elif prerequisites:
+            stage, stage_label = 4, ('Director identity needs attention' if proof.status == 'held' else 'Director identity required')
+        elif proof.registry_verified:
+            stage, stage_label = 3, 'Waiting for domain or business email verification'
+        elif proof.email_verified or proof.dns_verified:
+            stage, stage_label = 2, 'Checking company and domain'
+        else:
+            stage, stage_label = 1, 'Verification started'
+        telephone_stage = json.loads(proof.provider_state or '{}').get('stage', 'not_started')
+        if proof.status == 'verified' and telephone_stage == 'approved':
+            stage, stage_label = 6, 'Telephone approval complete'
         return {'available': settings.company_verification_enabled, 'status': proof.status,
                 'message': MESSAGES.get(proof.status, MESSAGES['pending']),
-                'explanation': REASONS.get(proof.reason, ''), 'domain': proof.domain,
+                'explanation': REASONS.get(proof.reason, ''), 'reason': proof.reason, 'domain': proof.domain,
+                'stage': stage, 'stage_total': 6, 'stage_label': stage_label,
                 'checks': {'business_email': proof.email_verified, 'dns': proof.dns_verified,
                            'company_register': proof.registry_verified, 'director_authority': proof.authority_verified},
                 'dns_name': '_raeburn-connect.' + proof.domain,
                 'dns_value': 'raeburn-connect=' + proof.dns_token,
-                'identity_ready': proof.status == 'pending' and proof.registry_verified and proof.dns_verified and proof.email_verified,
+                'identity_ready': prerequisites and (proof.status == 'pending' or identity_retry),
+                'identity_retry': identity_retry,
                 'retryable': proof.status == 'held' and proof.reason in {'registry_mismatch', 'provider_unavailable'},
-                'telephone_status': json.loads(proof.provider_state or '{}').get('stage', 'not_started')}
+                'telephone_status': telephone_stage}
 
 
 @router.post('/start', dependencies=[Depends(csrf)])
@@ -360,10 +378,13 @@ def identity(user=Depends(current_user)):
     with DB.begin() as db:
         tenant = db.scalar(select(Tenant).where(Tenant.id == user.tenant_id).with_for_update())
         proof = db.get(CompanyVerification, tenant.id)
-        if (not proof or proof.user_id != user.id or proof.status != 'pending'
+        retryable_identity_hold = proof and proof.status == 'held' and proof.reason in {'provider_uncertain', 'identity_configuration'}
+        if (not proof or proof.user_id != user.id or (proof.status != 'pending' and not retryable_identity_hold)
                 or proof.profile_hash != profile_hash(tenant) or aware(proof.expires_at) < now()
                 or not all([proof.email_verified, proof.dns_verified, proof.registry_verified])):
             raise HTTPException(409, 'Complete company, DNS and business email checks first')
+        if retryable_identity_hold:
+            proof.status, proof.reason = 'pending', ''
         api = identity_client()
         if proof.identity_session:
             session = api.v1.identity.verification_sessions.retrieve(proof.identity_session)
@@ -381,10 +402,15 @@ def identity(user=Depends(current_user)):
                     'metadata': {'tenant_id': tenant.id, 'attempt': proof.attempt},
                     'client_reference_id': proof.attempt, 'return_url': settings.public_url + '/?company_identity=returned',
                 }, {'idempotency_key': 'company-identity:' + proof.attempt})
-            except Exception:
-                proof.status, proof.reason = 'held', 'provider_uncertain'
+            except Exception as error:
+                definite_rejection = type(error).__name__ in {'PermissionError', 'AuthenticationError', 'InvalidRequestError'}
+                proof.status = 'held'
+                proof.reason = 'identity_configuration' if definite_rejection else 'provider_uncertain'
                 notify_state(db, proof)
-                return JSONResponse(status_code=503, content={'detail':'Identity verification has an uncertain result; activation remains on hold.'})
+                detail = ('Director identity could not start because the Stripe Identity configuration or API-key permissions need attention.'
+                          if definite_rejection else
+                          'Director identity returned an uncertain provider result. Your verified company checks are preserved and this step can be retried safely.')
+                return JSONResponse(status_code=503, content={'detail': detail})
             proof.identity_session = session.id
         if (session.metadata.get('tenant_id') != tenant.id or session.metadata.get('attempt') != proof.attempt
                 or (settings.environment == 'production' and not session.livemode)):
