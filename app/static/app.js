@@ -209,11 +209,9 @@ async function loadCompanyVerification() {
   $('#company-verification-explanation').textContent = value.explanation || '';
   $('#company-verification-stage').textContent = value.stage ? `Stage ${value.stage} of ${value.stage_total} — ${value.stage_label}` : '';
 
-  if (checks.company_register && me?.tenant?.status !== 'approved') {
-    $('#profile-review-title').textContent = 'Company details verified';
-    $('#profile-review-message').textContent = checks.director_authority
-      ? 'Your legal company details and director authority are verified. Activation is still waiting for telephone approval.'
-      : 'Your legal company name, registration number and registered office have been verified against Companies House. Activation is still waiting for director identity and telephone approval.';
+  if (checks.company_register) {
+    $('#profile-review').hidden = true;
+    $('#profile-form').hidden = true;
     $('#review-status').textContent = checks.director_authority ? 'Identity verified' : 'Company verified';
   }
   $('#company-verification-form').hidden = !value.available || !['not_started','expired','invalidated'].includes(value.status);
