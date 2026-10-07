@@ -122,6 +122,20 @@ async function loadCustomerOS() {
   }
   if (!recoveries.length) $('#recovery-list').append(element('p', 'Nothing needs recovery right now.'));
 
+  try {
+    const intelligence = await api('/api/conversation-intelligence/settings');
+    const form = $('#intelligence-form');
+    form.elements.enabled.checked = Boolean(intelligence.enabled);
+    form.elements.analyse_voicemail.checked = Boolean(intelligence.analyse_voicemail);
+    form.elements.analyse_messages.checked = Boolean(intelligence.analyse_messages);
+    form.elements.retention_days.value = String(intelligence.retention_days || 90);
+    $('#intelligence-status').textContent = intelligence.configured
+      ? (intelligence.enabled ? 'Conversation Intelligence is enabled for the sources selected above.' : 'Conversation Intelligence is available but currently switched off.')
+      : 'Conversation Intelligence will become available after the AI service is configured.';
+  } catch (error) {
+    $('#intelligence-status').textContent = 'Conversation Intelligence settings are temporarily unavailable.';
+  }
+
   const guarantees = await api('/api/customer-os/guarantees');
   $('#guarantee-list').replaceChildren();
   for (const rule of guarantees) {
@@ -134,6 +148,21 @@ async function loadCustomerOS() {
   }
   if (!guarantees.length) $('#guarantee-list').append(element('p', 'No service promises configured yet.'));
 }
+
+$('#intelligence-form').onsubmit = e => {
+  e.preventDefault();
+  act(async () => {
+    const form = e.target;
+    await api('/api/conversation-intelligence/settings', 'PUT', {
+      enabled: form.elements.enabled.checked,
+      analyse_voicemail: form.elements.analyse_voicemail.checked,
+      analyse_messages: form.elements.analyse_messages.checked,
+      retention_days: Number(form.elements.retention_days.value),
+    });
+    await loadCustomerOS();
+    notice('Conversation Intelligence settings saved.');
+  });
+};
 
 $('#guarantee-form').onsubmit = e => {
   e.preventDefault();
