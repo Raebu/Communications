@@ -35,6 +35,7 @@ from .customer_os import (
     record_event,
 )
 from .ai import router as ai_router, start_voice, voice_turn, configured as ai_configured
+from .conversation_intelligence import router as intelligence_router, queue_event
 from .models import AIProfile, Conversation, CompanyVerification
 from .autonomy import router as autonomy_router, inbound_ai, conversation
 from .relay import router as relay_router
@@ -65,6 +66,7 @@ app.include_router(accounts_router)
 app.include_router(company_verification_router)
 app.include_router(call_routing_router)
 app.include_router(customer_os_router)
+app.include_router(intelligence_router)
 app.include_router(ai_router)
 app.include_router(autonomy_router)
 
@@ -648,15 +650,16 @@ async def inbound(request: Request):
                 db.delete(row)
         inbound_ai(db, t, message)
         thread = conversation(db, message)
-        record_event(
+        customer_event = record_event(
             db,
             t.id,
             "message.inbound",
             channel,
             sid,
             thread.customer_id,
-            {"peer": peer, "preview": body[:240]},
+            {"peer": peer, "preview": body[:240], "body": body},
         )
+        queue_event(db, customer_event)
         db.add(Event(id="inbound:" + sid, tenant_id=t.id, kind="sms.inbound"))
     return Response("<Response/>", media_type="application/xml")
 
@@ -1086,7 +1089,7 @@ async def voice_voicemail_transcription(request: Request):
             raise HTTPException(404, "Call not found")
         event = _call_event(db, tenant_id, call.sid)
         text = p.get("TranscriptionText", "")[:8000]
-        record_event(
+        intelligence_event = record_event(
             db,
             tenant_id,
             "voicemail.transcribed",
@@ -1099,6 +1102,7 @@ async def voice_voicemail_transcription(request: Request):
                 "transcript": text,
             },
         )
+        queue_event(db, intelligence_event)
     return Response(status_code=204)
 
 
