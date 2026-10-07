@@ -750,15 +750,22 @@ def _queue_missed_call_sms(db, tenant_id, call, event):
         return None
     units = segment_count(body)
     day = now().replace(hour=0, minute=0, second=0, microsecond=0)
-    outbound = db.scalars(
+    daily = db.scalars(
+        select(Message).where(
+            Message.tenant_id == tenant_id,
+            Message.direction == "outbound",
+            Message.created_at >= day,
+        )
+    ).all()
+    monthly = db.scalars(
         select(Message).where(
             Message.tenant_id == tenant_id,
             Message.direction == "outbound",
             Message.created_at >= day.replace(day=1),
         )
     ).all()
-    daily_units = sum(message_units(message) for message in outbound if message.created_at >= day)
-    monthly_units = sum(message_units(message) for message in outbound)
+    daily_units = sum(message_units(message) for message in daily)
+    monthly_units = sum(message_units(message) for message in monthly)
     if daily_units + units > 100 or monthly_units + units > settings.sms_monthly_segments:
         db.add(
             Audit(
