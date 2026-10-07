@@ -240,6 +240,24 @@ class Call(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class QueueTicket(Base):
+    __tablename__ = "queue_tickets"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    number_id: Mapped[str] = mapped_column(ForeignKey("numbers.id"))
+    call_sid: Mapped[str] = mapped_column(ForeignKey("calls.sid"), unique=True, index=True)
+    customer_id: Mapped[str | None] = mapped_column(ForeignKey("customers.id"), index=True)
+    queue_name: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(24), default="waiting", index=True)
+    provider_sid: Mapped[str] = mapped_column(String(40), default="")
+    current_destination: Mapped[str] = mapped_column(String(20), default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    encrypted_payload: Mapped[str] = mapped_column(Text, default="")
+    entered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class AIProfile(Base):
     __tablename__ = "ai_profiles"
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), primary_key=True)
