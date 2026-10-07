@@ -796,13 +796,13 @@ async def voice_status(request: Request):
             return Response("<Response/>", media_type="application/xml")
         dial_status = p.get("DialCallStatus", "")
         if dial_status in {"no-answer", "busy", "failed", "canceled"}:
-            existing_recovery = db.scalar(
+            existing_recoveries = db.scalars(
                 select(RecoveryJob).where(
                     RecoveryJob.tenant_id == tenant_id,
                     RecoveryJob.kind == "missed_call",
                     RecoveryJob.status.in_(["queued", "attention"]),
                 )
-            )
+            ).all()
             event = db.scalar(
                 select(CustomerEvent).where(
                     CustomerEvent.tenant_id == tenant_id,
@@ -810,10 +810,17 @@ async def voice_status(request: Request):
                     CustomerEvent.kind == "call.inbound",
                 ).order_by(CustomerEvent.occurred_at.desc()).limit(1)
             )
-            if not existing_recovery or (
-                existing_recovery.encrypted_payload
-                and decrypt(existing_recovery.encrypted_payload).get("call_sid") != call.sid
-            ):
+            duplicate = False
+            for recovery in existing_recoveries:
+                if not recovery.encrypted_payload:
+                    continue
+                try:
+                    duplicate = decrypt(recovery.encrypted_payload).get("call_sid") == call.sid
+                except Exception:
+                    duplicate = False
+                if duplicate:
+                    break
+            if not duplicate:
                 detail = decrypt(event.encrypted_payload) if event and event.encrypted_payload else {}
                 db.add(
                     RecoveryJob(
