@@ -202,6 +202,7 @@ def status(user=Depends(current_user)):
                 'dns_name': '_raeburn-connect.' + proof.domain,
                 'dns_value': 'raeburn-connect=' + proof.dns_token,
                 'identity_ready': proof.status == 'pending' and proof.registry_verified and proof.dns_verified and proof.email_verified,
+                'retryable': proof.status == 'held' and proof.reason in {'registry_mismatch', 'provider_unavailable'},
                 'telephone_status': json.loads(proof.provider_state or '{}').get('stage', 'not_started')}
 
 
@@ -289,6 +290,22 @@ def resend_email(user=Depends(current_user)):
                 raise HTTPException(429, 'Please wait one minute before requesting another link')
             email_challenge(db, proof)
     return {'status': 'requested'}
+
+@router.post('/retry', dependencies=[Depends(csrf)])
+def retry(user=Depends(current_user)):
+    owner(user)
+    rate_limit('company-retry:' + user.id, 3)
+    with DB.begin() as db:
+        tenant = db.scalar(select(Tenant).where(Tenant.id == user.tenant_id).with_for_update())
+        proof = db.get(CompanyVerification, tenant.id)
+        if (not proof or proof.user_id != user.id or proof.status != 'held'
+                or proof.reason not in {'registry_mismatch', 'provider_unavailable'}
+                or proof.profile_hash != profile_hash(tenant) or aware(proof.expires_at) < now()):
+            raise HTTPException(409, 'This verification cannot be retried in place')
+        proof.status, proof.reason, proof.next_check_at = 'pending', '', now()
+        db.add(Audit(tenant_id=tenant.id, actor=user.id, action='company.verification.retry'))
+    return {'status': 'pending'}
+
 
 
 def consume_daily_budget(db, prefix, maximum):
@@ -384,7 +401,7 @@ def norm(value):
 def registered_address(company):
     address = company.get('registered_office_address') or {}
     return ', '.join(str(address.get(key, '')) for key in
-                     ('premises', 'address_line_1', 'address_line_2', 'locality', 'region', 'postal_code') if address.get(key))
+                     ('premises', 'address_line_1', 'address_line_2', 'locality', 'region', 'country', 'postal_code') if address.get(key))
 
 
 def registry_match(tenant, company):
