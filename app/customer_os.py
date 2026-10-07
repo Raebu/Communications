@@ -85,12 +85,17 @@ def evaluate_guarantees(db, tenant_id, event_kind, customer_id, event_id):
         )
 
 
-def customer_state(db, tenant_id, customer_id):
+def require_customer(db, tenant_id, customer_id):
     customer = db.scalar(
         select(Customer).where(Customer.id == customer_id, Customer.tenant_id == tenant_id)
     )
     if not customer:
         raise HTTPException(404, "Customer not found")
+    return customer
+
+
+def customer_state(db, tenant_id, customer_id):
+    customer = require_customer(db, tenant_id, customer_id)
     state = db.get(CustomerState, customer_id)
     if not state:
         state = CustomerState(customer_id=customer_id, tenant_id=tenant_id)
@@ -202,7 +207,7 @@ def brain_update(customer_id: str, data: StateUpdate, user=Depends(current_user)
 @router.get("/customers/{customer_id}/timeline")
 def timeline(customer_id: str, user=Depends(current_user)):
     with DB() as db:
-        customer_state(db, user.tenant_id, customer_id)
+        require_customer(db, user.tenant_id, customer_id)
         events = db.scalars(
             select(CustomerEvent).where(
                 CustomerEvent.tenant_id == user.tenant_id,
