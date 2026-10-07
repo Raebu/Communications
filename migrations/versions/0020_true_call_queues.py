@@ -24,6 +24,7 @@ def upgrade():
         sa.Column("encrypted_payload", sa.Text(), nullable=False, server_default=""),
         sa.Column("entered_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("next_attempt_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.UniqueConstraint("call_sid"),
     )
@@ -33,9 +34,11 @@ def upgrade():
     op.create_index("ix_queue_tickets_queue_name", "queue_tickets", ["queue_name"])
     op.create_index("ix_queue_tickets_status", "queue_tickets", ["status"])
     op.create_index("ix_queue_tickets_entered_at", "queue_tickets", ["entered_at"])
+    op.create_index("ix_queue_tickets_next_attempt_at", "queue_tickets", ["next_attempt_at"])
 
 
 def downgrade():
+    op.drop_index("ix_queue_tickets_next_attempt_at", table_name="queue_tickets")
     op.drop_index("ix_queue_tickets_entered_at", table_name="queue_tickets")
     op.drop_index("ix_queue_tickets_status", table_name="queue_tickets")
     op.drop_index("ix_queue_tickets_queue_name", table_name="queue_tickets")
