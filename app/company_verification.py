@@ -245,9 +245,12 @@ def status(user=Depends(current_user)):
             stage_label = ('Telephone approval complete' if telephone_stage == 'approved'
                            else 'Telephone approval in progress')
         provider_state = json.loads(proof.provider_state or '{}')
+        effective_reason = proof.reason or (
+            provider_state.get('reason', '') if proof.status == 'verified' else ''
+        )
         return {'available': settings.company_verification_enabled, 'status': proof.status,
                 'message': MESSAGES.get(proof.status, MESSAGES['pending']),
-                'explanation': REASONS.get(proof.reason, ''), 'reason': proof.reason, 'domain': proof.domain,
+                'explanation': REASONS.get(effective_reason, ''), 'reason': effective_reason, 'domain': proof.domain,
                 'stage': stage, 'stage_total': 6, 'stage_label': stage_label,
                 'checks': {'business_email': proof.email_verified, 'dns': proof.dns_verified,
                            'company_register': proof.registry_verified, 'director_authority': proof.authority_verified},
@@ -954,7 +957,8 @@ def verification_one():
                                 'rejected' if code == 'provider_rejected' else 'needs_attention'
                             )
                             proof.provider_state = json.dumps(provider_state)
-                            proof.reason = provider_state['reason']
+                            # Telephone review state must not invalidate completed Raeburn KYC.
+                            proof.reason = ''
                             tenant.status = 'pending'
                             proof.next_check_at = now() + timedelta(hours=24)
                         else:
