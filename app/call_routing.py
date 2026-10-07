@@ -86,10 +86,11 @@ class RoutingUpdate(BaseModel):
     vip_destination: str = Field(default="", pattern=r"^(?:\+44(?:[12]\d{9}|7[1-57-9]\d{8}))?$")
     whisper: bool = True
     voicemail_greeting: str = Field(
-        default="Nobody is available right now. Please leave a message after the tone.",
+        default="Nobody is available right now. Your message will be recorded. Please leave it after the tone.",
         min_length=10,
         max_length=300,
     )
+    transcribe_voicemail: bool = False
     callback_message: str = Field(
         default="We have saved your callback request and the team will follow up.",
         min_length=10,
@@ -123,7 +124,8 @@ def _normalise(value):
     value.setdefault("never_miss", ["fallback", "ai", "callback"])
     value.setdefault("vip_destination", "")
     value.setdefault("whisper", True)
-    value.setdefault("voicemail_greeting", "Nobody is available right now. Please leave a message after the tone.")
+    value.setdefault("voicemail_greeting", "Nobody is available right now. Your message will be recorded. Please leave it after the tone.")
+    value.setdefault("transcribe_voicemail", False)
     value.setdefault("callback_message", "We have saved your callback request and the team will follow up.")
     value.setdefault("ring_seconds", 20)
     value.setdefault("fallback", "")
@@ -217,7 +219,8 @@ def get_call_routing(number_id: str, user=Depends(current_user)):
             "never_miss": ["fallback", "ai", "callback"],
             "vip_destination": "",
             "whisper": True,
-            "voicemail_greeting": "Nobody is available right now. Please leave a message after the tone.",
+            "voicemail_greeting": "Nobody is available right now. Your message will be recorded. Please leave it after the tone.",
+            "transcribe_voicemail": False,
             "callback_message": "We have saved your callback request and the team will follow up.",
         }
 
@@ -293,15 +296,24 @@ def dial_xml(destination, minutes, action_url, timeout, whisper_url=""):
     return dial_group_xml([destination], minutes, action_url, timeout, whisper_url, False)
 
 
-def voicemail_xml(config, action_url, status_url):
+def voicemail_xml(config, action_url, status_url, transcription_url=""):
+    transcribe = bool(config.get("transcribe_voicemail") and transcription_url)
+    transcription = (
+        ' transcribe="true" transcribeCallback="'
+        + escape(transcription_url, {'"': "&quot;"})
+        + '"'
+        if transcribe else ""
+    )
     return (
         "<Response><Say>"
-        + escape(config.get("voicemail_greeting", "Please leave a message after the tone."))
-        + '</Say><Record maxLength="180" playBeep="true" action="'
+        + escape(config.get("voicemail_greeting", "Your message will be recorded. Please leave it after the tone."))
+        + '</Say><Record maxLength="119" playBeep="true" action="'
         + escape(action_url, {'"': "&quot;"})
         + '" recordingStatusCallback="'
         + escape(status_url, {'"': "&quot;"})
-        + '" recordingStatusCallbackMethod="POST" method="POST"/></Response>'
+        + '" recordingStatusCallbackMethod="POST" method="POST"'
+        + transcription
+        + "/></Response>"
     )
 
 
