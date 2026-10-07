@@ -136,11 +136,36 @@ def require_company_verified(db, tenant):
         raise HTTPException(409, 'Company verification is awaiting its scheduled refresh')
 
 
+VERIFICATION_EMAIL_DAILY_CAP = 6
+
+
+def verification_email_count(db, recipient):
+    key = 'verification-email-sent:' + recipient.lower() + ':' + now().date().isoformat()
+    sent = db.get(RateBucket, key)
+    total = sent.count if sent else 0
+    pending = db.scalars(select(EmailJob).where(
+        EmailJob.recipient == recipient,
+        EmailJob.status.in_(['queued', 'sending']),
+    )).all()
+    for job in pending:
+        try:
+            if decrypt(job.encrypted_payload).get('category') == 'company_verification':
+                total += 1
+        except Exception:
+            continue
+    return total
+
+
 def mail(db, recipient, subject, body):
+    if verification_email_count(db, recipient) >= VERIFICATION_EMAIL_DAILY_CAP:
+        return False
     db.add(EmailJob(recipient=recipient, encrypted_payload=encrypt({
         'from': settings.verification_email_from or settings.email_from,
-        'subject': subject + ' — Raeburn Connect', 'body': body + '\n\n' + settings.public_url + '/',
+        'subject': subject + ' — Raeburn Connect',
+        'body': body + '\n\n' + settings.public_url + '/',
+        'category': 'company_verification',
     })))
+    return True
 
 
 def email_challenge(db, proof):
@@ -496,20 +521,6 @@ def notify_state(db, proof):
     if not noteworthy:
         proof.last_notified = state
         return
-
-    # Hard safety cap for status/update emails. Business-email challenge messages
-    # have their own independent resend cap and are not counted here.
-    key = 'verification-notify:' + proof.tenant_id + ':' + now().date().isoformat()
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-    insert = pg_insert if db.bind.dialect.name == 'postgresql' else sqlite_insert
-    db.execute(insert(RateBucket).values(key=key, count=0, expires_at=now() + timedelta(days=2))
-               .on_conflict_do_nothing(index_elements=['key']))
-    budget = db.scalar(select(RateBucket).where(RateBucket.key == key).with_for_update())
-    if budget.count >= 4:
-        proof.last_notified = state
-        return
-    budget.count += 1
 
     user = db.get(User, proof.user_id)
     mail(db, user.email, 'Your company verification update',
