@@ -257,7 +257,9 @@ def status(user=Depends(current_user)):
                 'identity_retry': identity_retry,
                 'retryable': proof.status == 'held' and proof.reason in {'registry_mismatch', 'provider_unavailable'},
                 'telephone_status': telephone_stage,
-                'telephone_authorized': bool(provider_state.get('submission_authorized'))}
+                'telephone_authorized': bool(provider_state.get('submission_authorized')),
+                'telephone_wait': ('Telephone approval usually completes within 1 business day. '
+                                   'Some applications can take up to 3 business days.')}
 
 
 @router.post('/start', dependencies=[Depends(csrf)])
@@ -595,9 +597,20 @@ def identity_mobile_complete(token: str):
             else:
                 claim.domain = proof.domain
             proof.status = 'verified'
-            proof.next_check_at = now() + timedelta(hours=24)
+            state = json.loads(proof.provider_state or '{}')
+            if state.get('stage') != 'approved':
+                state['submission_authorized'] = True
+                state['stage'] = state.get('stage') or 'authorized'
+                state['authorized_automatically'] = True
+                proof.provider_state = json.dumps(state)
+                proof.next_check_at = now()
+                db.add(Audit(tenant_id=tenant_id, actor=proof.user_id,
+                             action='company.telephone_approval.authorized',
+                             detail='automatic_after_director_verification'))
+            else:
+                proof.next_check_at = now() + timedelta(hours=24)
             notify_state(db, proof)
-            return {'status': 'verified'}
+            return {'status': 'verified', 'telephone_approval': 'starting'}
         except ValueError as error:
             code = str(error)
             proof.status, proof.reason = 'held', code if code in REASONS else 'provider_requirements'
@@ -896,14 +909,24 @@ def verification_one():
                     else:
                         claim.domain = proof.domain
                     proof.status = 'verified'
-                    proof.next_check_at = now() + timedelta(hours=24)
                     provider_state = json.loads(proof.provider_state or '{}')
+                    if provider_state.get('stage') != 'approved' and not provider_state.get('submission_authorized'):
+                        provider_state['submission_authorized'] = True
+                        provider_state['stage'] = provider_state.get('stage') or 'authorized'
+                        provider_state['authorized_automatically'] = True
+                        proof.provider_state = json.dumps(provider_state)
+                        db.add(Audit(tenant_id=tenant.id, actor='worker',
+                                     action='company.telephone_approval.authorized',
+                                     detail='automatic_after_company_verification'))
                     if settings.verification_auto_twilio or provider_state.get('submission_authorized'):
                         from .regulatory_automation import advance
                         advance(db, tenant, proof, company)
-                        # Poll provider approval frequently, then revalidate daily.
-                        if tenant.status != 'approved':
-                            proof.next_check_at = now() + timedelta(minutes=10)
+                        # Check provider review often enough that approved accounts unlock promptly.
+                        proof.next_check_at = (now() + timedelta(hours=24)
+                                               if tenant.status == 'approved'
+                                               else now() + timedelta(minutes=5))
+                    else:
+                        proof.next_check_at = now() + timedelta(hours=24)
                 else:
                     proof.status = 'pending'
                     if tenant.status == 'approved':
