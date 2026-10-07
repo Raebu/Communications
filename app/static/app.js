@@ -219,6 +219,20 @@ async function loadCompanyVerification() {
   $('#company-identity').hidden = !value.identity_ready;
   $('#company-identity').textContent = value.identity_retry ? 'Retry director identity securely' : 'Verify director identity securely';
   $('#company-verification-retry').hidden = !value.retryable;
+  const telephonePanel = $('#company-telephone-approval');
+  const telephonePreflight = $('#company-telephone-preflight');
+  const telephoneStart = $('#company-telephone-start');
+  if (telephonePanel) {
+    const telephoneComplete = value.telephone_status === 'approved';
+    telephonePanel.hidden = !checks.director_authority || telephoneComplete;
+    telephonePreflight.hidden = Boolean(value.telephone_authorized);
+    telephoneStart.hidden = true;
+    if (value.telephone_authorized && !telephoneComplete) {
+      $('#company-telephone-readiness').textContent = 'Telephone approval has started. Twilio is reviewing the regulatory bundle; this page will update automatically.';
+    } else if (!telephoneComplete) {
+      $('#company-telephone-readiness').textContent = 'Before anything is submitted, Raeburn Connect can check Twilio’s current UK requirements against your verified company data without creating a regulatory bundle.';
+    }
+  }
 
   if (value.checks) {
     const labels = {business_email:'Business email',dns:'Domain control',company_register:'Company register',director_authority:'Director authority'};
@@ -238,6 +252,41 @@ async function loadCompanyVerification() {
     if (value.telephone_status) $('#company-verification-explanation').textContent += ' Telephone approval: ' + value.telephone_status.replaceAll('_',' ') + '.';
   }
 }
+let telephonePreflightReady = false;
+$('#company-telephone-preflight').onclick = () => act(async () => {
+  const button = $('#company-telephone-preflight');
+  button.disabled = true;
+  try {
+    const result = await api('/api/company-verification/telephone-preflight', 'POST');
+    telephonePreflightReady = Boolean(result.ready);
+    $('#company-telephone-readiness').textContent =
+      'Ready for Twilio submission. Verified UK company data, registered address and director contact mobile satisfy the current ' +
+      result.number_type + ' business-number requirements. No regulatory bundle has been created yet.';
+    $('#company-telephone-start').hidden = !telephonePreflightReady;
+  } finally {
+    button.disabled = false;
+  }
+});
+$('#company-telephone-start').onclick = () => act(async () => {
+  if (!telephonePreflightReady) throw Error('Run the telephone approval readiness check first.');
+  const button = $('#company-telephone-start');
+  button.disabled = true;
+  try {
+    const result = await api('/api/company-verification/telephone-start', 'POST');
+    telephonePreflightReady = false;
+    $('#company-telephone-start').hidden = true;
+    $('#company-telephone-preflight').hidden = true;
+    $('#company-telephone-readiness').textContent =
+      result.status === 'approved'
+        ? 'Telephone approval is complete.'
+        : 'Telephone approval has started. Twilio is reviewing the regulatory bundle; this page will update automatically.';
+    await loadCompanyVerification();
+    notice('Telephone approval started. Raeburn Connect will keep checking Twilio for the result.');
+  } finally {
+    button.disabled = false;
+  }
+});
+
 $('#company-verification-form').onsubmit = e => {e.preventDefault();act(async()=>{
   const data = fields(e.target); data.authority_confirmed = e.target.elements.authority_confirmed.checked;
   await api('/api/company-verification/start','POST',data); await load(); show('account');
