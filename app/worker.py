@@ -225,6 +225,9 @@ def run():
             from .quality import scheduled_one
 
             worked = scheduled_one() or worked
+            from .customer_os import obligation_one
+
+            worked = obligation_one() or worked
             from .outbound_hooks import webhook_one
 
             worked = webhook_one() or worked
