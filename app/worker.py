@@ -231,6 +231,9 @@ def run():
             from .conversation_intelligence import intelligence_one, intelligence_retention_one
             from .call_recording import recording_retention_one
 
+            from .call_queue import queue_hunt_one
+
+            worked = queue_hunt_one() or worked
             worked = recording_retention_one() or worked
             worked = intelligence_retention_one() or worked
             worked = intelligence_one() or worked
