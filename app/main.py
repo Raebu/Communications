@@ -1623,6 +1623,25 @@ def _event_with_source(db, tenant_id, kind, source_id):
     )
 
 
+def _media_call_for_sid(db, tenant_id, provider_call_sid):
+    call = db.scalar(
+        select(Call).where(Call.sid == provider_call_sid, Call.tenant_id == tenant_id)
+    )
+    if call:
+        return call
+    ticket = db.scalar(
+        select(QueueTicket).where(
+            QueueTicket.tenant_id == tenant_id,
+            QueueTicket.provider_sid == provider_call_sid,
+        ).order_by(QueueTicket.updated_at.desc()).limit(1)
+    )
+    if not ticket:
+        return None
+    return db.scalar(
+        select(Call).where(Call.sid == ticket.call_sid, Call.tenant_id == tenant_id)
+    )
+
+
 @app.post("/webhooks/twilio/call-recording")
 async def call_recording(request: Request):
     tenant_id, p = await validate_twilio(request)
@@ -1631,14 +1650,13 @@ async def call_recording(request: Request):
     if not recording_sid or not call_sid:
         raise HTTPException(422, "Missing recording identity")
     with DB.begin() as db:
-        call = db.scalar(
-            select(Call).where(Call.sid == call_sid, Call.tenant_id == tenant_id)
-        )
+        call = _media_call_for_sid(db, tenant_id, call_sid)
         if not call:
             raise HTTPException(404, "Call not found")
+        original_call_sid = call.sid
         if _event_with_source(db, tenant_id, "call.recording", recording_sid):
             return Response(status_code=204)
-        event = _call_event(db, tenant_id, call_sid)
+        event = _call_event(db, tenant_id, original_call_sid)
         number = db.get(Number, call.number_id)
         route_settings = routing_settings_for(db, number) if number else {}
         retention_days = int((route_settings or {}).get("recording_retention_days", settings.voice_retention_days))
@@ -1650,7 +1668,7 @@ async def call_recording(request: Request):
             recording_sid,
             event.customer_id if event else None,
             {
-                "call_sid": call_sid,
+                "call_sid": original_call_sid,
                 "recording_sid": recording_sid,
                 "status": p.get("RecordingStatus", ""),
                 "duration": p.get("RecordingDuration", "0"),
@@ -1672,12 +1690,11 @@ async def call_transcription(request: Request):
     if not call_sid or not transcription_sid or not event_type:
         raise HTTPException(422, "Missing transcription identity")
     with DB.begin() as db:
-        call = db.scalar(
-            select(Call).where(Call.sid == call_sid, Call.tenant_id == tenant_id)
-        )
+        call = _media_call_for_sid(db, tenant_id, call_sid)
         if not call:
             raise HTTPException(404, "Call not found")
-        inbound = _call_event(db, tenant_id, call_sid)
+        original_call_sid = call.sid
+        inbound = _call_event(db, tenant_id, original_call_sid)
         customer_id = inbound.customer_id if inbound else None
 
         if event_type == "transcription-content":
@@ -1705,7 +1722,7 @@ async def call_transcription(request: Request):
                 source_id,
                 customer_id,
                 {
-                    "call_sid": call_sid,
+                    "call_sid": original_call_sid,
                     "transcription_sid": transcription_sid,
                     "sequence": int(sequence) if sequence.isdigit() else 0,
                     "track": track,
@@ -1727,7 +1744,7 @@ async def call_transcription(request: Request):
                     source_id,
                     customer_id,
                     {
-                        "call_sid": call_sid,
+                        "call_sid": original_call_sid,
                         "transcription_sid": transcription_sid,
                         "code": p.get("ErrorCode", ""),
                         "message": p.get("ErrorMessage", "")[:500],
@@ -1755,7 +1772,7 @@ async def call_transcription(request: Request):
                 payload = decrypt(row.encrypted_payload)
             except Exception:
                 continue
-            if payload.get("call_sid") != call_sid:
+            if payload.get("call_sid") != original_call_sid:
                 continue
             utterances.append(payload)
         utterances.sort(key=lambda item: item.get("sequence", 0))
@@ -1773,7 +1790,7 @@ async def call_transcription(request: Request):
                 transcription_sid,
                 customer_id,
                 {
-                    "call_sid": call_sid,
+                    "call_sid": original_call_sid,
                     "transcription_sid": transcription_sid,
                     "transcript": transcript,
                     "utterances": len(utterances),
