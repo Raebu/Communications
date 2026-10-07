@@ -15,16 +15,17 @@ from .config import settings
 from .integrations import router as integrations_router
 from .channels import enabled as channel_enabled
 from .call_routing import router as call_routing_router, routing_for, menu_xml, dial_xml, unavailable_xml, selected_destination
+from .customer_os import router as customer_os_router, customer_for_identity, record_event
 from .ai import router as ai_router, start_voice, voice_turn, configured as ai_configured
 from .models import AIProfile, Conversation, CompanyVerification
-from .autonomy import router as autonomy_router, inbound_ai
+from .autonomy import router as autonomy_router, inbound_ai, conversation
 from .relay import router as relay_router
 from .payments import router as payments_router
 from .operations import router as operations_router
 from .quality import router as quality_router
 from .knowledge_import import router as knowledge_import_router
 from .outbound_hooks import router as outbound_hooks_router
-from .models import Call, WorkerHeartbeat, Audit, Base, EmailJob, DB, Event, Message, Number, Order, Session, Suppression, Tenant, User, engine, now
+from .models import Call, CustomerEvent, RecoveryJob, WorkerHeartbeat, Audit, Base, EmailJob, DB, Event, Message, Number, Order, Session, Suppression, Tenant, User, engine, now
 from .providers import create_subaccount, parent_client, tenant_client
 from .security import csrf, current_user, decrypt, encrypt, hash_password, rate_limit, verify_password, verify_totp
 from .worker import within_budget
@@ -45,6 +46,7 @@ app = FastAPI(title="Raeburn Communications", version="0.5.0", lifespan=lifespan
 app.include_router(accounts_router)
 app.include_router(company_verification_router)
 app.include_router(call_routing_router)
+app.include_router(customer_os_router)
 app.include_router(ai_router)
 app.include_router(autonomy_router)
 
@@ -627,6 +629,16 @@ async def inbound(request: Request):
             if row:
                 db.delete(row)
         inbound_ai(db, t, message)
+        thread = conversation(db, message)
+        record_event(
+            db,
+            t.id,
+            "message.inbound",
+            channel,
+            sid,
+            thread.customer_id,
+            {"peer": peer, "preview": body[:240]},
+        )
         db.add(Event(id="inbound:" + sid, tenant_id=t.id, kind="sms.inbound"))
     return Response("<Response/>", media_type="application/xml")
 
@@ -671,6 +683,17 @@ async def voice(request: Request):
                 destination = route["fallback"] if route else n.forwarding
                 call = Call(sid=sid, tenant_id=t.id, number_id=n.id, destination=destination, reserved_minutes=minutes)
                 db.add(call)
+                caller = p.get("From", "")
+                customer_id = customer_for_identity(db, t.id, "phone", caller)
+                record_event(
+                    db,
+                    t.id,
+                    "call.inbound",
+                    "voice",
+                    sid,
+                    customer_id,
+                    {"from": caller, "to": p.get("To", "")},
+                )
         elif call and call.status == "completed":
             allowed = False
         if allowed and minutes:
@@ -773,6 +796,60 @@ async def voice_status(request: Request):
             raise HTTPException(404, "Call not found")
         if p.get("CallStatus") and p.get("CallStatus") != "completed":
             return Response("<Response/>", media_type="application/xml")
+        dial_status = p.get("DialCallStatus", "")
+        if dial_status in {"no-answer", "busy", "failed", "canceled"}:
+            existing_recoveries = db.scalars(
+                select(RecoveryJob).where(
+                    RecoveryJob.tenant_id == tenant_id,
+                    RecoveryJob.kind == "missed_call",
+                    RecoveryJob.status.in_(["queued", "attention"]),
+                )
+            ).all()
+            event = db.scalar(
+                select(CustomerEvent).where(
+                    CustomerEvent.tenant_id == tenant_id,
+                    CustomerEvent.source_id == call.sid,
+                    CustomerEvent.kind == "call.inbound",
+                ).order_by(CustomerEvent.occurred_at.desc()).limit(1)
+            )
+            duplicate = False
+            for recovery in existing_recoveries:
+                if not recovery.encrypted_payload:
+                    continue
+                try:
+                    duplicate = decrypt(recovery.encrypted_payload).get("call_sid") == call.sid
+                except Exception:
+                    duplicate = False
+                if duplicate:
+                    break
+            if not duplicate:
+                detail = decrypt(event.encrypted_payload) if event and event.encrypted_payload else {}
+                db.add(
+                    RecoveryJob(
+                        tenant_id=tenant_id,
+                        customer_id=event.customer_id if event else None,
+                        kind="missed_call",
+                        status="attention",
+                        due_at=now(),
+                        encrypted_payload=encrypt(
+                            {
+                                "call_sid": call.sid,
+                                "from": detail.get("from", ""),
+                                "to": detail.get("to", ""),
+                                "reason": dial_status,
+                            }
+                        ),
+                    )
+                )
+                record_event(
+                    db,
+                    tenant_id,
+                    "call.missed",
+                    "voice",
+                    call.sid,
+                    event.customer_id if event else None,
+                    {"reason": dial_status},
+                )
         try:
             seconds = int(p.get("CallDuration", p.get("DialCallDuration", "0")))
             if "CallDuration" not in p:
