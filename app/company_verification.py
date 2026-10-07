@@ -176,12 +176,12 @@ def email_challenge(db, proof):
     proof.email_sends = 1
     token = secrets.token_urlsafe(48)
     proof.email_token_hash = hashlib.sha256(token.encode()).hexdigest()
-    proof.email_expires_at = now() + timedelta(minutes=30)
+    proof.email_expires_at = proof.expires_at
     link = settings.public_url + '/?company_proof=' + token
     verification_event_mail(
         db, proof, 'business_email', proof.mailbox, 'Confirm your business email',
         'Please confirm access to your business email for company verification.\n\n' + link
-        + '\n\nSign in to the account that requested this check. The link expires in 30 minutes. '
+        + '\n\nSign in to the account that requested this check. The link remains valid for this verification attempt. '
         'Email access alone does not approve a company. Ignore this email if you did not request it.'
     )
 
