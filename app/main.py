@@ -3,7 +3,6 @@ import secrets
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Literal
-from xml.sax.saxutils import escape
 import stripe
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
@@ -15,6 +14,7 @@ from twilio.request_validator import RequestValidator
 from .config import settings
 from .integrations import router as integrations_router
 from .channels import enabled as channel_enabled
+from .call_routing import router as call_routing_router, routing_for, menu_xml, dial_xml, unavailable_xml, selected_destination
 from .ai import router as ai_router, start_voice, voice_turn, configured as ai_configured
 from .models import AIProfile, Conversation, CompanyVerification
 from .autonomy import router as autonomy_router, inbound_ai
@@ -44,6 +44,7 @@ async def lifespan(app):
 app = FastAPI(title="Raeburn Communications", version="0.5.0", lifespan=lifespan)
 app.include_router(accounts_router)
 app.include_router(company_verification_router)
+app.include_router(call_routing_router)
 app.include_router(ai_router)
 app.include_router(autonomy_router)
 
@@ -653,8 +654,9 @@ async def voice(request: Request):
         n = db.scalar(select(Number).where(Number.tenant_id == t.id, Number.phone == p.get("To")))
         sid = p.get("CallSid", "")
         profile = db.get(AIProfile, t.id)
-        ai_allowed = profile and profile.voice_enabled and not profile.paused and ai_configured()
-        allowed = n and n.voice and (n.forwarding or ai_allowed) and sid and t.billing_status == "active" and t.status == "approved"
+        route = routing_for(db, n) if n else None
+        ai_allowed = profile and profile.voice_enabled and not profile.paused and ai_configured() and not route
+        allowed = n and n.voice and (route or n.forwarding or ai_allowed) and sid and t.billing_status == "active" and t.status == "approved"
         call = db.get(Call, sid) if sid else None
         if call and (not n or call.tenant_id != t.id or call.number_id != n.id):
             raise HTTPException(409, "Call ownership mismatch")
@@ -666,27 +668,99 @@ async def voice(request: Request):
             minutes = min(10, max(0, settings.voice_monthly_minutes - committed))
             allowed = minutes > 0 and within_budget(tenant_client(t), t)
             if allowed:
-                call = Call(sid=sid, tenant_id=t.id, number_id=n.id, destination=n.forwarding, reserved_minutes=minutes)
+                destination = route["fallback"] if route else n.forwarding
+                call = Call(sid=sid, tenant_id=t.id, number_id=n.id, destination=destination, reserved_minutes=minutes)
                 db.add(call)
         elif call and call.status == "completed":
             allowed = False
         if allowed and minutes:
-            ai_xml = start_voice(db, t, n, call) if ai_allowed else None
-            destination = call.destination
-            callback = settings.public_url + "/webhooks/twilio/voice-status"
-            xml = (
-                '<Response><Dial timeout="20" timeLimit="'
-                + str(minutes * 60)
-                + '" action="'
-                + escape(callback, {'"': "&quot;"})
-                + '" method="POST"><Number>'
-                + escape(destination)
-                + "</Number></Dial></Response>"
-            )
-            if ai_xml:
-                xml = ai_xml
+            if route:
+                call.status = "menu"
+                xml = menu_xml(route, settings.public_url + "/webhooks/twilio/voice-menu")
+            else:
+                ai_xml = start_voice(db, t, n, call) if ai_allowed else None
+                xml = dial_xml(call.destination, minutes, settings.public_url + "/webhooks/twilio/voice-status", 20)
+                if ai_xml:
+                    xml = ai_xml
         else:
-            xml = "<Response><Say>This business is currently unavailable. Please try again later.</Say></Response>"
+            xml = unavailable_xml("This business is currently unavailable. Please try again later.")
+    return Response(xml, media_type="application/xml")
+
+
+@app.post("/webhooks/twilio/voice-menu")
+async def voice_menu(request: Request):
+    tenant_id, p = await validate_twilio(request)
+    with DB.begin() as db:
+        t = db.scalar(select(Tenant).where(Tenant.id == tenant_id).with_for_update())
+        call = db.scalar(select(Call).where(Call.sid == p.get("CallSid", ""), Call.tenant_id == t.id).with_for_update())
+        if not call:
+            raise HTTPException(404, "Call not found")
+        n = db.scalar(select(Number).where(Number.id == call.number_id, Number.tenant_id == t.id))
+        route = routing_for(db, n) if n else None
+        if not route or t.status != "approved" or t.billing_status != "active" or call.status == "completed":
+            return Response(unavailable_xml(), media_type="application/xml")
+        destination = selected_destination(route, p.get("Digits", ""))
+        if destination:
+            call.destination = destination
+            call.status = "routing"
+            xml = dial_xml(
+                destination,
+                call.reserved_minutes,
+                settings.public_url + "/webhooks/twilio/voice-route-result",
+                route["ring_seconds"],
+            )
+        elif call.status == "menu_retry":
+            call.destination = route["fallback"]
+            call.status = "routing_fallback"
+            xml = dial_xml(
+                route["fallback"],
+                call.reserved_minutes,
+                settings.public_url + "/webhooks/twilio/voice-status",
+                route["ring_seconds"],
+            )
+        else:
+            call.status = "menu_retry"
+            xml = menu_xml(
+                route,
+                settings.public_url + "/webhooks/twilio/voice-menu",
+                "Sorry, we did not recognise that choice.",
+            )
+    return Response(xml, media_type="application/xml")
+
+
+@app.post("/webhooks/twilio/voice-route-result")
+async def voice_route_result(request: Request):
+    tenant_id, p = await validate_twilio(request)
+    with DB.begin() as db:
+        t = db.scalar(select(Tenant).where(Tenant.id == tenant_id).with_for_update())
+        call = db.scalar(select(Call).where(Call.sid == p.get("CallSid", ""), Call.tenant_id == t.id).with_for_update())
+        if not call:
+            raise HTTPException(404, "Call not found")
+        n = db.scalar(select(Number).where(Number.id == call.number_id, Number.tenant_id == t.id))
+        route = routing_for(db, n) if n else None
+        if not route or t.status != "approved" or t.billing_status != "active":
+            return Response(unavailable_xml(), media_type="application/xml")
+        dial_status = p.get("DialCallStatus", "")
+        try:
+            seconds = max(0, int(p.get("DialCallDuration", "0")))
+        except ValueError:
+            raise HTTPException(422, "Invalid call duration")
+        if dial_status == "completed":
+            call.billed_minutes = max(call.billed_minutes, (seconds + 59) // 60)
+            call.status = "completed"
+            return Response("<Response/>", media_type="application/xml")
+        fallback = route["fallback"]
+        if not fallback or fallback == call.destination:
+            call.status = "completed"
+            return Response(unavailable_xml(), media_type="application/xml")
+        call.destination = fallback
+        call.status = "routing_fallback"
+        xml = dial_xml(
+            fallback,
+            call.reserved_minutes,
+            settings.public_url + "/webhooks/twilio/voice-status",
+            route["ring_seconds"],
+        )
     return Response(xml, media_type="application/xml")
 
 

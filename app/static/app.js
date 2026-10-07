@@ -90,11 +90,105 @@ function renderNumbers() {
   for (const n of owned) {
     if (n.sms) { const option = element('option', n.phone); option.value = n.id; $('#send-number').append(option); }
     const card = element('article', undefined, 'owned'); card.append(element('h3', n.phone), element('p', `WhatsApp: ${n.whatsapp} · RCS: ${n.rcs}`));
-    if (n.voice) { const label = element('label', 'UK call forwarding destination'); const input = element('input'); input.type='tel'; input.value=n.forwarding; input.placeholder='+447700900000'; label.append(input); card.append(label, button('Save forwarding', async () => { await api(`/api/numbers/${n.id}/forwarding`, 'PUT', {destination:input.value}); notice('Call forwarding updated.'); })); }
+    if (n.voice) { const label = element('label', 'Simple call forwarding destination (used when the call menu is off)'); const input = element('input'); input.type='tel'; input.value=n.forwarding; input.placeholder='+447700900000'; label.append(input); card.append(label, button('Save forwarding', async () => { await api(`/api/numbers/${n.id}/forwarding`, 'PUT', {destination:input.value}); notice('Call forwarding updated.'); })); }
     $('#owned-numbers').append(card);
   }
   if (!owned.length) $('#owned-numbers').append(element('p', 'Your activated numbers will appear here.'));
+  const voiceNumbers = owned.filter(n => n.voice);
+  const routingPanel = $('#call-routing-panel');
+  const routingSelect = $('#call-routing-number');
+  if (routingPanel && routingSelect) {
+    routingPanel.hidden = !voiceNumbers.length;
+    routingSelect.replaceChildren();
+    for (const n of voiceNumbers) {
+      const option = element('option', n.phone);
+      option.value = n.id;
+      routingSelect.append(option);
+    }
+    if (voiceNumbers.length) act(loadCallRouting);
+  }
 }
+
+function addCallRouteRow(value = {}) {
+  const container = $('#call-route-options');
+  if (container.children.length >= 10) return notice('A call menu can have up to 10 choices.');
+  const row = element('div', undefined, 'inline call-route-row');
+  const digitLabel = element('label', 'Key');
+  const digit = element('select');
+  digit.name = 'route_digit';
+  for (const d of ['1','2','3','4','5','6','7','8','9','0']) {
+    const option = element('option', d);
+    option.value = d;
+    if (value.digit === d) option.selected = true;
+    digit.append(option);
+  }
+  digitLabel.append(digit);
+  const nameLabel = element('label', 'Team or person');
+  const name = element('input');
+  name.name = 'route_label';
+  name.maxLength = 60;
+  name.required = true;
+  name.placeholder = 'Sales';
+  name.value = value.label || '';
+  nameLabel.append(name);
+  const phoneLabel = element('label', 'Phone or mobile');
+  const phone = element('input');
+  phone.name = 'route_destination';
+  phone.type = 'tel';
+  phone.required = true;
+  phone.pattern = '\\+44[0-9]{9,10}';
+  phone.placeholder = '+447700900000';
+  phone.value = value.destination || '';
+  phoneLabel.append(phone);
+  const remove = button('Remove', () => { row.remove(); }, true);
+  row.append(digitLabel, nameLabel, phoneLabel, remove);
+  container.append(row);
+}
+
+async function loadCallRouting() {
+  const numberId = $('#call-routing-number').value;
+  if (!numberId) return;
+  const config = await api('/api/numbers/' + numberId + '/call-routing');
+  const form = $('#call-routing-form');
+  form.elements.enabled.checked = Boolean(config.enabled);
+  form.elements.greeting.value = config.greeting || '';
+  form.elements.fallback.value = config.fallback || '';
+  form.elements.ring_seconds.value = String(config.ring_seconds || 20);
+  $('#call-route-options').replaceChildren();
+  for (const option of (config.options || [])) addCallRouteRow(option);
+  if (!(config.options || []).length) {
+    addCallRouteRow({digit:'1', label:'Sales', destination:''});
+    addCallRouteRow({digit:'2', label:'Accounts', destination:''});
+    addCallRouteRow({digit:'0', label:'Operator', destination:''});
+  }
+}
+
+$('#call-routing-number').onchange = () => act(loadCallRouting);
+$('#add-call-route').onclick = () => addCallRouteRow();
+$('#call-routing-form').onsubmit = e => {
+  e.preventDefault();
+  act(async () => {
+    const form = e.target;
+    const rows = [...$('#call-route-options').querySelectorAll('.call-route-row')];
+    const options = rows.map(row => ({
+      digit: row.querySelector('[name="route_digit"]').value,
+      label: row.querySelector('[name="route_label"]').value.trim(),
+      destination: row.querySelector('[name="route_destination"]').value.trim(),
+    })).filter(item => item.label || item.destination);
+    await api('/api/numbers/' + $('#call-routing-number').value + '/call-routing', 'PUT', {
+      enabled: form.elements.enabled.checked,
+      greeting: form.elements.greeting.value,
+      fallback: form.elements.fallback.value.trim(),
+      ring_seconds: Number(form.elements.ring_seconds.value),
+      options,
+    });
+    notice(form.elements.enabled.checked
+      ? 'Call menu saved. Incoming callers will hear it when your telephone service is active.'
+      : 'Call menu saved and switched off. Simple forwarding will be used instead.');
+    await loadCallRouting();
+  });
+};
+
 async function loadOrders() {
   const orders = await api('/api/orders');
   const labels = {
