@@ -437,7 +437,7 @@ def test_identity_qr_uses_one_time_mobile_handoff_and_fresh_stripe_url(configure
 
     landing = c.get(f"/api/company-verification/identity-mobile/{token}")
     assert landing.status_code == 200
-    assert "Continue secure identity check" in landing.text
+    assert "Start secure identity check" in landing.text
 
     session = StripeLike(
         id="vs_live_qr",
