@@ -23,17 +23,18 @@ class RouteOption(BaseModel):
     digit: str = Field(pattern=r"^[0-9]$")
     label: str = Field(min_length=1, max_length=60)
     description: str = Field(default="", max_length=240)
-    action: Literal["dial", "callback", "ai", "voicemail"] = "dial"
+    action: Literal["dial", "queue", "callback", "ai", "voicemail"] = "dial"
     destination: str = ""
     destinations: list[str] = Field(default_factory=list, max_length=8)
     strategy: Literal["simultaneous", "sequential", "priority", "longest_idle"] = "simultaneous"
+    queue_callback_enabled: bool = True
 
     @model_validator(mode="after")
     def validate_option(self):
         members = self.destinations or ([self.destination] if self.destination else [])
-        if self.action == "dial":
+        if self.action in {"dial", "queue"}:
             if not members:
-                raise ValueError("A dial option needs at least one destination")
+                raise ValueError("A human routing option needs at least one destination")
             if len(set(members)) != len(members):
                 raise ValueError("A ring group cannot contain the same destination twice")
             if any(not re.fullmatch(PHONE, member) for member in members):
@@ -165,6 +166,7 @@ def _normalise(value):
         option.setdefault("description", "")
         option.setdefault("action", "dial")
         option.setdefault("strategy", "simultaneous")
+        option.setdefault("queue_callback_enabled", True)
         option.setdefault("destinations", _members(option))
     return value
 
@@ -410,6 +412,98 @@ def dial_xml(
         transcription_callback,
         transcription_language,
     )
+
+
+def queue_name(tenant_id, number_id, digit):
+    return ("rq-" + tenant_id[:8] + "-" + number_id[:8] + "-" + str(digit))[:64]
+
+
+def enqueue_xml(queue, wait_url, action_url, announcement=""):
+    notice = "<Say>" + escape(announcement) + "</Say>" if announcement else ""
+    return (
+        "<Response>"
+        + notice
+        + '<Enqueue waitUrl="'
+        + escape(wait_url, {'"': "&quot;"})
+        + '" waitUrlMethod="POST" action="'
+        + escape(action_url, {'"': "&quot;"})
+        + '" method="POST">'
+        + escape(queue)
+        + "</Enqueue></Response>"
+    )
+
+
+def queue_wait_xml(position, average_wait, callback_url="", callback_enabled=True):
+    position = max(1, int(position or 1))
+    average_wait = max(0, int(average_wait or 0))
+    wait_text = "You are number " + str(position) + " in the queue."
+    if average_wait:
+        minutes = max(1, (average_wait + 59) // 60)
+        wait_text += " The current estimated wait is about " + str(minutes) + " minute"
+        if minutes != 1:
+            wait_text += "s"
+        wait_text += "."
+    if callback_enabled and callback_url:
+        return (
+            '<Response><Gather numDigits="1" timeout="5" action="'
+            + escape(callback_url, {'"': "&quot;"})
+            + '" method="POST"><Say>'
+            + escape(wait_text + " Press 1 to leave the queue and receive a callback instead.")
+            + "</Say></Gather><Pause length="5"/></Response>"
+        )
+    return "<Response><Say>" + escape(wait_text) + "</Say><Pause length="8"/></Response>"
+
+
+def queue_agent_xml(
+    queue,
+    action_url,
+    caller_notice_url="",
+    record=False,
+    recording_callback="",
+    transcribe=False,
+    transcription_callback="",
+    transcription_language="en-GB",
+):
+    recording = ""
+    if record:
+        recording = ' record="record-from-answer-dual"'
+        if recording_callback:
+            recording += (
+                ' recordingStatusCallback="'
+                + escape(recording_callback, {'"': "&quot;"})
+                + '" recordingStatusCallbackMethod="POST"'
+                + ' recordingStatusCallbackEvent="completed absent"'
+            )
+    transcription = ""
+    if transcribe and transcription_callback:
+        transcription = (
+            '<Start><Transcription statusCallbackUrl="'
+            + escape(transcription_callback, {'"': "&quot;"})
+            + '" track="both_tracks" partialResults="false" languageCode="'
+            + escape(transcription_language)
+            + '" inboundTrackLabel="customer" outboundTrackLabel="agent"/></Start>'
+        )
+    queue_url = (
+        ' url="' + escape(caller_notice_url, {'"': "&quot;"}) + '" method="POST"'
+        if caller_notice_url else ""
+    )
+    return (
+        "<Response><Say>You have a queued customer call.</Say>"
+        + transcription
+        + '<Dial timeout="20" action="'
+        + escape(action_url, {'"': "&quot;"})
+        + '" method="POST"'
+        + recording
+        + "><Queue"
+        + queue_url
+        + ">"
+        + escape(queue)
+        + "</Queue></Dial></Response>"
+    )
+
+
+def leave_queue_xml():
+    return "<Response><Leave/></Response>"
 
 
 def voicemail_xml(config, action_url, status_url, transcription_url=""):
