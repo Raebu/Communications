@@ -323,6 +323,9 @@ def dial_group_xml(
     record=False,
     recording_callback="",
     recording_announcement="",
+    transcribe=False,
+    transcription_callback="",
+    transcription_language="en-GB",
 ):
     numbers = "".join(
         '<Number'
@@ -346,8 +349,18 @@ def dial_group_xml(
                 + '" recordingStatusCallbackMethod="POST"'
                 + ' recordingStatusCallbackEvent="completed absent"'
             )
+    transcription = ""
+    if transcribe and transcription_callback:
+        transcription = (
+            '<Start><Transcription statusCallbackUrl="'
+            + escape(transcription_callback, {'"': "&quot;"})
+            + '" track="both_tracks" partialResults="false" languageCode="'
+            + escape(transcription_language)
+            + '" inboundTrackLabel="customer" outboundTrackLabel="agent"/></Start>'
+        )
     return (
         "<Response>"
+        + transcription
         + announcement
         + '<Dial timeout="'
         + str(timeout)
@@ -373,6 +386,9 @@ def dial_xml(
     record=False,
     recording_callback="",
     recording_announcement="",
+    transcribe=False,
+    transcription_callback="",
+    transcription_language="en-GB",
 ):
     return dial_group_xml(
         [destination],
@@ -384,6 +400,9 @@ def dial_xml(
         record,
         recording_callback,
         recording_announcement,
+        transcribe,
+        transcription_callback,
+        transcription_language,
     )
 
 
