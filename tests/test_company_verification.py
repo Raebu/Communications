@@ -8,7 +8,7 @@ from sqlalchemy import select
 from app import company_verification as cv
 from app import regulatory_automation as rc
 from app.config import settings
-from app.models import CompanyVerification, DB, EmailJob, Tenant, User, VerifiedCompanyClaim, now
+from app.models import CompanyVerification, DB, EmailJob, RateBucket, Tenant, User, VerifiedCompanyClaim, now
 from app.security import decrypt, encrypt
 from test_flows import HEADERS, customer
 
@@ -130,25 +130,19 @@ def test_routine_pending_poll_does_not_email(configured):
         assert proof.last_notified == "pending::"
 
 
-def test_verification_status_email_hard_cap(configured):
-    c, tid = applicant()
-    assert begin(c).status_code == 200
+def test_verification_email_cap_uses_sent_plus_pending(configured):
+    recipient = "owner@example-business.co.uk"
     with DB.begin() as db:
-        proof = db.get(CompanyVerification, tid)
-        before = len(db.scalars(select(EmailJob)).all())
-        states = [
-            ("held", "registry_mismatch"),
-            ("held", "authority_mismatch"),
-            ("held", "provider_requirements"),
-            ("held", "provider_rejected"),
-            ("held", "claim_conflict"),
-            ("held", "domain_risk"),
-        ]
-        for status, reason in states:
-            proof.status, proof.reason = status, reason
-            cv.notify_state(db, proof)
-        after = len(db.scalars(select(EmailJob)).all())
-        assert after - before == 4
+        recipient_key = cv.hashlib.sha256(recipient.lower().encode()).hexdigest()[:32]
+        key = "verification-email-sent:" + recipient_key + ":" + now().date().isoformat()
+        db.add(RateBucket(key=key, count=5, expires_at=now() + timedelta(days=2)))
+        assert cv.verification_email_count(db, recipient) == 5
+        assert cv.mail(db, recipient, "First", "Body")
+        db.flush()
+        assert cv.verification_email_count(db, recipient) == 6
+        assert not cv.mail(db, recipient, "Blocked", "Body")
+        jobs = db.scalars(select(EmailJob).where(EmailJob.recipient == recipient)).all()
+        assert len(jobs) == 1
 
 
 def test_mailbox_and_dns_alone_never_prove_authority(configured):
