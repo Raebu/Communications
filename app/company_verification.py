@@ -140,7 +140,8 @@ VERIFICATION_EMAIL_DAILY_CAP = 6
 
 
 def verification_email_count(db, recipient):
-    key = 'verification-email-sent:' + recipient.lower() + ':' + now().date().isoformat()
+    recipient_key = hashlib.sha256(recipient.lower().encode()).hexdigest()[:32]
+    key = 'verification-email-sent:' + recipient_key + ':' + now().date().isoformat()
     sent = db.get(RateBucket, key)
     total = sent.count if sent else 0
     pending = db.scalars(select(EmailJob).where(
