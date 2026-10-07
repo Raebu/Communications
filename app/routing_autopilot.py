@@ -309,6 +309,22 @@ def simulate(config, scenario):
                     steps.append({"kind": "answered", "label": "Answered by selected route"})
                     return {"steps": steps, "ends_safely": True}
                 action = "never_miss"
+            elif option["action"] == "queue":
+                members = option.get("destinations") or [option.get("destination")]
+                steps.append({
+                    "kind": "queue",
+                    "label": "Real queue → agent hunt: " + ", ".join(members),
+                })
+                if option.get("queue_callback_enabled", True):
+                    steps.append({
+                        "kind": "virtual_callback",
+                        "label": "Caller can keep their place and receive a callback instead of holding",
+                    })
+                if scenario.selected_destination_answers:
+                    steps.append({"kind": "answered", "label": "Next available agent connects to caller"})
+                else:
+                    steps.append({"kind": "waiting", "label": "Caller remains safely queued until an agent is available"})
+                return {"steps": steps, "ends_safely": True}
             else:
                 action = option["action"]
 
