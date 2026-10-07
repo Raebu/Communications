@@ -215,6 +215,16 @@ def test_generated_draft_rejects_invalid_or_invented_number(monkeypatch):
 
 def test_generated_draft_allows_phone_explicitly_supplied_by_owner(monkeypatch):
     client, tenant_id, number_id = account()
+    with DB.begin() as db:
+        db.add(
+            CallRouting(
+                number_id=number_id,
+                tenant_id=tenant_id,
+                enabled=True,
+                encrypted_config=encrypt(config()),
+            )
+        )
+
     generated = config()
     generated["fallback"] = "+447700900088"
     monkeypatch.setattr(ra, "_json_completion", lambda *args, **kwargs: generated)
