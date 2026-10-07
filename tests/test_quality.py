@@ -8,7 +8,7 @@ from test_flows import HEADERS
 
 def test_daily_quality_failures_pause_automation(setup_ai, monkeypatch):
     c, t, n = setup_ai
-    data = {"enabled": True, "cases": [{"question": "When are you open?", "expected_terms": ["9"], "forbidden_terms": ["guaranteed"]}]}
+    data = {"enabled": True, "pause_on_forbidden": False, "cases": [{"question": "When are you open?", "expected_terms": ["9"], "forbidden_terms": ["guaranteed"]}]}
     assert c.put("/api/ai/quality-schedule", headers=HEADERS, json=data).status_code == 200
     monkeypatch.setattr(ai, "generate", lambda *a: "Guaranteed always open")
     assert scheduled_one()
