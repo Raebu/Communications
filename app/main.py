@@ -3,7 +3,6 @@ import secrets
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Literal
-from xml.sax.saxutils import escape
 import stripe
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
