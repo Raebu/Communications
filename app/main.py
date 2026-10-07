@@ -1261,7 +1261,7 @@ async def queue_wait(request: Request):
     with DB.begin() as db:
         ticket = _queue_ticket_for(db, tenant_id, ticket_id)
         if p.get("CallSid", "") != ticket.call_sid or ticket.status not in {"waiting", "agent_calling", "bridging"}:
-            return Response("<Response><Pause length="5"/></Response>", media_type="application/xml")
+            return Response('<Response><Pause length="5"/></Response>', media_type="application/xml")
         payload = decrypt(ticket.encrypted_payload) if ticket.encrypted_payload else {}
         xml = queue_wait_xml(
             p.get("QueuePosition", "1"),
@@ -1286,7 +1286,7 @@ async def queue_wait_choice(request: Request):
             or not payload.get("callback_enabled", True)
             or ticket.status not in {"waiting", "agent_calling"}
         ):
-            return Response("<Response><Pause length="5"/></Response>", media_type="application/xml")
+            return Response('<Response><Pause length="5"/></Response>', media_type="application/xml")
         hunt_in_flight = ticket.status == "agent_calling"
         if not hunt_in_flight:
             ticket.status = "virtual_waiting"
