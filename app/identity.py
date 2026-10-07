@@ -63,6 +63,11 @@ def redeem(db, t, target, code):
         db.flush()
         customer_id = customer.id
     source.customer_id = target.customer_id = customer_id
+    from .customer_os import register_verified_identity
+
+    for thread in (source, target):
+        if thread.peer.startswith("+"):
+            register_verified_identity(db, t.id, customer_id, "phone", thread.peer)
     proof.consumed = True
     # Only appointments already belonging to the proven source are attached.
     for booking in db.scalars(select(Booking).where(Booking.tenant_id == t.id, Booking.peer == source.peer, Booking.customer_id.is_(None))):
