@@ -100,6 +100,7 @@ class RoutingUpdate(BaseModel):
     transcribe_voicemail: bool = False
     record_answered_calls: bool = False
     transcribe_answered_calls: bool = False
+    recording_retention_days: int = Field(default=30, ge=1, le=90)
     recording_announcement: str = Field(
         default="This call may be recorded for service and quality purposes.",
         min_length=10,
@@ -152,6 +153,7 @@ def _normalise(value):
     value.setdefault("transcribe_voicemail", False)
     value.setdefault("record_answered_calls", False)
     value.setdefault("transcribe_answered_calls", False)
+    value.setdefault("recording_retention_days", 30)
     value.setdefault("recording_announcement", "This call may be recorded for service and quality purposes.")
     value.setdefault("callback_message", "We have saved your callback request and the team will follow up.")
     value.setdefault("missed_call_sms_enabled", False)
