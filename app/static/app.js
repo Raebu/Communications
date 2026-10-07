@@ -245,6 +245,7 @@ $('#company-verification-form').onsubmit = e => {e.preventDefault();act(async()=
 });};
 $('#company-verification-retry').onclick = ()=>act(async()=>{await api('/api/company-verification/retry','POST');await loadCompanyVerification();notice('Verification checks restarted. Your existing TXT record remains valid.');});
 let identityHandoffUrl = '';
+let identityHandoffPoll = null;
 function mobileIdentityDevice() {
   if (navigator.userAgentData?.mobile === true) return true;
   if (/Android|iPhone|iPod|Mobile/i.test(navigator.userAgent)) return true;
@@ -252,8 +253,29 @@ function mobileIdentityDevice() {
 }
 function closeIdentityHandoff() {
   identityHandoffUrl = '';
+  if (identityHandoffPoll) {
+    clearInterval(identityHandoffPoll);
+    identityHandoffPoll = null;
+  }
   $('#identity-handoff-qr').removeAttribute('src');
   if ($('#identity-handoff').open) $('#identity-handoff').close();
+}
+function watchIdentityHandoff() {
+  if (identityHandoffPoll) clearInterval(identityHandoffPoll);
+  identityHandoffPoll = setInterval(async () => {
+    if (!$('#identity-handoff').open) return closeIdentityHandoff();
+    try {
+      const value = await loadCompanyVerification();
+      const checks = value.checks || {};
+      if (checks.director_authority || value.status === 'verified') {
+        closeIdentityHandoff();
+        notice('Director identity verified. Your account verification has been updated.');
+      } else if (value.status === 'held' && !value.identity_retry) {
+        closeIdentityHandoff();
+        notice(value.explanation || 'The director identity result needs attention.');
+      }
+    } catch (_) {}
+  }, 2000);
 }
 $('#identity-handoff-close').onclick = closeIdentityHandoff;
 $('#identity-handoff-cancel').onclick = closeIdentityHandoff;
@@ -274,6 +296,7 @@ $('#company-identity').onclick = ()=>act(async()=>{
   identityHandoffUrl = target.href;
   $('#identity-handoff-qr').src = '/api/company-verification/identity-qr?ts=' + Date.now();
   $('#identity-handoff').showModal();
+  watchIdentityHandoff();
 });
 const companyProofToken = actionParams.get('company_proof');
 if(companyProofToken){

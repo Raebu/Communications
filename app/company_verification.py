@@ -540,6 +540,71 @@ def identity_mobile_continue(token: str):
     return RedirectResponse(session.url, status_code=303)
 
 
+def identity_completion_context(token):
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    with DB() as db:
+        action = db.get(ActionToken, token_hash)
+        if (not action or action.purpose != 'identity_handoff' or not action.used
+                or aware(action.expires_at) < now()):
+            raise HTTPException(410, 'This phone handoff has expired. Return to Raeburn Connect and scan a new QR code.')
+        user = db.get(User, action.user_id)
+        tenant = db.get(Tenant, user.tenant_id) if user else None
+        proof = db.get(CompanyVerification, user.tenant_id) if user else None
+        if (not user or not tenant or not proof or proof.user_id != user.id or not proof.identity_session
+                or proof.profile_hash != profile_hash(tenant)
+                or not all([proof.email_verified, proof.dns_verified, proof.registry_verified])):
+            raise HTTPException(409, 'This director identity handoff is no longer valid.')
+        return user.id, tenant.id
+
+
+@router.post('/identity-mobile/{token}/complete')
+def identity_mobile_complete(token: str):
+    user_id, tenant_id = identity_completion_context(token)
+    rate_limit('company-identity-complete:' + user_id, 40)
+    with DB.begin() as db:
+        tenant = db.scalar(select(Tenant).where(Tenant.id == tenant_id).with_for_update())
+        proof = db.get(CompanyVerification, tenant_id)
+        if proof.authority_verified:
+            return {'status': 'verified'}
+        try:
+            company, officers = registry(tenant)
+            registry_match(tenant, company)
+            if not reconcile_identity(proof, officers):
+                proof.next_check_at = now()
+                return {'status': 'processing'}
+            proof.authority_verified = True
+            proof.reason = ''
+            user = db.get(User, proof.user_id)
+            verification_event_mail(
+                db, proof, 'director_verified', user.email, 'Your director identity is verified',
+                'Your director identity has been securely verified and matched to a current Companies House director. '
+                'Your company verification is complete.'
+            )
+            claim = db.scalar(select(VerifiedCompanyClaim).where(
+                (VerifiedCompanyClaim.company_number == proof.company_number)
+                | (VerifiedCompanyClaim.domain == proof.domain)
+                | (VerifiedCompanyClaim.tenant_id == tenant_id)))
+            if claim and (claim.tenant_id != tenant_id or claim.company_number != proof.company_number):
+                raise ValueError('claim_conflict')
+            if not claim:
+                db.add(VerifiedCompanyClaim(company_number=proof.company_number, domain=proof.domain, tenant_id=tenant_id))
+            else:
+                claim.domain = proof.domain
+            proof.status = 'verified'
+            proof.next_check_at = now() + timedelta(hours=24)
+            notify_state(db, proof)
+            return {'status': 'verified'}
+        except ValueError as error:
+            code = str(error)
+            proof.status, proof.reason = 'held', code if code in REASONS else 'provider_requirements'
+            tenant.status = 'pending'
+            notify_state(db, proof)
+            return JSONResponse(status_code=409, content={'status': 'held', 'detail': REASONS.get(proof.reason, MESSAGES['held'])})
+        except Exception:
+            proof.next_check_at = now()
+            return {'status': 'processing'}
+
+
 def registry(tenant):
     number = tenant.registration_number.strip().upper()
     with httpx.Client(timeout=4, follow_redirects=False, trust_env=False) as api:

@@ -39,9 +39,34 @@ document.addEventListener('DOMContentLoaded', () => {
         fallback.hidden = false;
         return;
       }
-      status.textContent = 'Identity submitted. You can return to Raeburn Connect on your computer.';
+
       start.hidden = true;
       fallback.hidden = true;
+      const title = document.querySelector('.mobile-handoff-card h1');
+      const lead = document.querySelector('.mobile-handoff-card .lead');
+      if (title) title.textContent = 'Verification submitted.';
+      if (lead) lead.textContent = 'Stripe has received your identity check. We are confirming the result with Companies House now.';
+      status.textContent = 'Finishing verification…';
+
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const complete = await fetch('/api/company-verification/identity-mobile/' + encodeURIComponent(token) + '/complete', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {'X-Requested-With': 'Raeburn'}
+        });
+        const state = await complete.json();
+        if (complete.ok && state.status === 'verified') {
+          if (title) title.textContent = 'Director identity verified.';
+          if (lead) lead.textContent = 'Your director identity has been verified and matched to the company record.';
+          status.textContent = 'You can close this page and return to Raeburn Connect on your computer.';
+          return;
+        }
+        if (!complete.ok && state.status === 'held') {
+          throw new Error(state.detail || 'The identity result needs attention.');
+        }
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+      status.textContent = 'Stripe has your verification. Raeburn Connect is still confirming the result; you can return to your computer.';
     } catch (error) {
       status.textContent = error.message || 'Unable to start identity verification.';
       fallback.hidden = !fallback.href;
