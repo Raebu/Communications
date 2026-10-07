@@ -116,6 +116,41 @@ def test_exact_email_domain_and_account_bound_single_use_link(configured):
     assert c.post("/api/company-verification/confirm-email", json={"token": token}, headers=HEADERS).status_code == 400
 
 
+def test_routine_pending_poll_does_not_email(configured):
+    c, tid = applicant()
+    assert begin(c).status_code == 200
+    with DB.begin() as db:
+        proof = db.get(CompanyVerification, tid)
+        before = len(db.scalars(select(EmailJob)).all())
+        proof.status, proof.reason, proof.provider_state = "pending", "", ""
+        proof.last_notified = "held:registry_mismatch:"
+        cv.notify_state(db, proof)
+        after = len(db.scalars(select(EmailJob)).all())
+        assert after == before
+        assert proof.last_notified == "pending::"
+
+
+def test_verification_status_email_hard_cap(configured):
+    c, tid = applicant()
+    assert begin(c).status_code == 200
+    with DB.begin() as db:
+        proof = db.get(CompanyVerification, tid)
+        before = len(db.scalars(select(EmailJob)).all())
+        states = [
+            ("held", "registry_mismatch"),
+            ("held", "authority_mismatch"),
+            ("held", "provider_requirements"),
+            ("held", "provider_rejected"),
+            ("held", "claim_conflict"),
+            ("held", "domain_risk"),
+        ]
+        for status, reason in states:
+            proof.status, proof.reason = status, reason
+            cv.notify_state(db, proof)
+        after = len(db.scalars(select(EmailJob)).all())
+        assert after - before == 4
+
+
 def test_mailbox_and_dns_alone_never_prove_authority(configured):
     c, tid = applicant()
     assert begin(c).status_code == 200
