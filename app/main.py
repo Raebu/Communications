@@ -1084,12 +1084,12 @@ async def voice(request: Request):
 
 @app.post("/webhooks/twilio/voice-human-fallback")
 async def voice_human_fallback(request: Request):
-    tenant_id, _ = await validate_twilio(request)
+    tenant_id, p = await validate_twilio(request)
     with DB.begin() as db:
         t = db.scalar(select(Tenant).where(Tenant.id == tenant_id).with_for_update())
         call = db.scalar(
             select(Call).where(
-                Call.sid == (await request.form()).get("CallSid", ""),
+                Call.sid == p.get("CallSid", ""),
                 Call.tenant_id == t.id,
             ).with_for_update()
         )
@@ -1261,6 +1261,172 @@ async def voice_whisper(request: Request):
             event.customer_id if event else None, {},
         )
     return Response(whisper_xml(text), media_type="application/xml")
+
+
+def _event_with_source(db, tenant_id, kind, source_id):
+    return db.scalar(
+        select(CustomerEvent).where(
+            CustomerEvent.tenant_id == tenant_id,
+            CustomerEvent.kind == kind,
+            CustomerEvent.source_id == source_id,
+        ).order_by(CustomerEvent.occurred_at.desc()).limit(1)
+    )
+
+
+@app.post("/webhooks/twilio/call-recording")
+async def call_recording(request: Request):
+    tenant_id, p = await validate_twilio(request)
+    recording_sid = p.get("RecordingSid", "")
+    call_sid = p.get("CallSid", "")
+    if not recording_sid or not call_sid:
+        raise HTTPException(422, "Missing recording identity")
+    with DB.begin() as db:
+        call = db.scalar(
+            select(Call).where(Call.sid == call_sid, Call.tenant_id == tenant_id)
+        )
+        if not call:
+            raise HTTPException(404, "Call not found")
+        if _event_with_source(db, tenant_id, "call.recording", recording_sid):
+            return Response(status_code=204)
+        event = _call_event(db, tenant_id, call_sid)
+        record_event(
+            db,
+            tenant_id,
+            "call.recording",
+            "voice",
+            recording_sid,
+            event.customer_id if event else None,
+            {
+                "call_sid": call_sid,
+                "recording_sid": recording_sid,
+                "status": p.get("RecordingStatus", ""),
+                "duration": p.get("RecordingDuration", "0"),
+                "channels": p.get("RecordingChannels", ""),
+                "source": p.get("RecordingSource", ""),
+                "deleted": False,
+            },
+        )
+    return Response(status_code=204)
+
+
+@app.post("/webhooks/twilio/call-transcription")
+async def call_transcription(request: Request):
+    tenant_id, p = await validate_twilio(request)
+    call_sid = p.get("CallSid", "")
+    transcription_sid = p.get("TranscriptionSid", "")
+    event_type = p.get("TranscriptionEvent", "")
+    if not call_sid or not transcription_sid or not event_type:
+        raise HTTPException(422, "Missing transcription identity")
+    with DB.begin() as db:
+        call = db.scalar(
+            select(Call).where(Call.sid == call_sid, Call.tenant_id == tenant_id)
+        )
+        if not call:
+            raise HTTPException(404, "Call not found")
+        inbound = _call_event(db, tenant_id, call_sid)
+        customer_id = inbound.customer_id if inbound else None
+
+        if event_type == "transcription-content":
+            if p.get("Final", "").lower() != "true":
+                return Response(status_code=204)
+            sequence = p.get("SequenceId", "")
+            source_id = transcription_sid + ":" + sequence
+            if _event_with_source(db, tenant_id, "call.transcript.utterance", source_id):
+                return Response(status_code=204)
+            try:
+                data = json.loads(p.get("TranscriptionData", "{}"))
+            except json.JSONDecodeError:
+                raise HTTPException(422, "Invalid transcription data") from None
+            transcript = str(data.get("transcript", "")).strip()[:4000]
+            if not transcript:
+                return Response(status_code=204)
+            track = p.get("Track", "")
+            speaker = "Customer" if track == "inbound_track" else "Agent" if track == "outbound_track" else "Speaker"
+            confidence = data.get("confidence")
+            record_event(
+                db,
+                tenant_id,
+                "call.transcript.utterance",
+                "voice",
+                source_id,
+                customer_id,
+                {
+                    "call_sid": call_sid,
+                    "transcription_sid": transcription_sid,
+                    "sequence": int(sequence) if sequence.isdigit() else 0,
+                    "track": track,
+                    "speaker": speaker,
+                    "text": transcript,
+                    "confidence": confidence,
+                },
+            )
+            return Response(status_code=204)
+
+        if event_type == "transcription-error":
+            source_id = transcription_sid + ":error"
+            if not _event_with_source(db, tenant_id, "call.transcription.error", source_id):
+                record_event(
+                    db,
+                    tenant_id,
+                    "call.transcription.error",
+                    "voice",
+                    source_id,
+                    customer_id,
+                    {
+                        "call_sid": call_sid,
+                        "transcription_sid": transcription_sid,
+                        "code": p.get("ErrorCode", ""),
+                        "message": p.get("ErrorMessage", "")[:500],
+                    },
+                )
+            return Response(status_code=204)
+
+        if event_type != "transcription-stopped":
+            return Response(status_code=204)
+
+        if _event_with_source(db, tenant_id, "call.transcribed", transcription_sid):
+            return Response(status_code=204)
+        rows = db.scalars(
+            select(CustomerEvent).where(
+                CustomerEvent.tenant_id == tenant_id,
+                CustomerEvent.kind == "call.transcript.utterance",
+                CustomerEvent.occurred_at >= call.created_at,
+            ).order_by(CustomerEvent.occurred_at)
+        ).all()
+        utterances = []
+        for row in rows:
+            if not row.encrypted_payload:
+                continue
+            try:
+                payload = decrypt(row.encrypted_payload)
+            except Exception:
+                continue
+            if payload.get("call_sid") != call_sid:
+                continue
+            utterances.append(payload)
+        utterances.sort(key=lambda item: item.get("sequence", 0))
+        transcript = "\n".join(
+            item.get("speaker", "Speaker") + ": " + item.get("text", "")
+            for item in utterances
+            if item.get("text")
+        )[:24000]
+        if transcript:
+            intelligence_event = record_event(
+                db,
+                tenant_id,
+                "call.transcribed",
+                "voice",
+                transcription_sid,
+                customer_id,
+                {
+                    "call_sid": call_sid,
+                    "transcription_sid": transcription_sid,
+                    "transcript": transcript,
+                    "utterances": len(utterances),
+                },
+            )
+            queue_event(db, intelligence_event)
+    return Response(status_code=204)
 
 
 @app.post("/webhooks/twilio/voice-voicemail-finished")
