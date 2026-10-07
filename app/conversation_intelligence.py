@@ -1,12 +1,13 @@
 """Opt-in conversation intelligence with constrained business-signal extraction."""
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
+from .ai import configured as ai_configured, quota
 from .config import settings
 from .models import (
     Audit,
@@ -32,7 +33,7 @@ class IntelligenceSettings(BaseModel):
 
 
 def configured():
-    return bool(settings.ai_url and settings.ai_model)
+    return ai_configured()
 
 
 def queue_event(db, event):
@@ -81,7 +82,8 @@ def _request_analysis(text):
     )
     headers = {"Authorization": "Bearer " + settings.ai_key} if settings.ai_key else {}
     with httpx.Client(timeout=httpx.Timeout(8), follow_redirects=False, trust_env=False) as client:
-        response = client.post(
+        with client.stream(
+            "POST",
             settings.ai_url + "/chat/completions",
             headers=headers,
             json={
@@ -93,9 +95,17 @@ def _request_analysis(text):
                 "max_tokens": 500,
                 "temperature": 0,
             },
-        )
-        response.raise_for_status()
-    raw = response.json()["choices"][0]["message"]["content"]
+        ) as response:
+            response.raise_for_status()
+            raw_bytes = bytearray()
+            for chunk in response.iter_bytes():
+                raw_bytes.extend(chunk)
+                if len(raw_bytes) > 65536:
+                    raise RuntimeError("AI response too large")
+    try:
+        raw = json.loads(raw_bytes)["choices"][0]["message"]["content"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        raise RuntimeError("Invalid intelligence response") from None
     if not isinstance(raw, str) or len(raw) > 12000:
         raise RuntimeError("Invalid intelligence response")
     try:
@@ -274,7 +284,10 @@ def intelligence_retention_one():
             return False
         profile = db.get(IntelligenceProfile, job.tenant_id)
         days = profile.retention_days if profile else 90
-        if job.completed_at.replace(tzinfo=timezone.utc) > now() - __import__("datetime").timedelta(days=days):
+        completed = job.completed_at
+        if not completed.tzinfo:
+            completed = completed.replace(tzinfo=timezone.utc)
+        if completed > now() - timedelta(days=days):
             return False
         job.result = ""
         db.add(Audit(
@@ -306,6 +319,15 @@ def intelligence_one():
         if not text:
             job.status = "cancelled"
             return True
+        try:
+            quota(db, job.tenant_id)
+        except HTTPException as error:
+            if error.status_code == 429:
+                job.status = "failed"
+                job.error = "ai_quota_reached"
+                job.completed_at = now()
+                return True
+            raise
         job.status = "processing"
         job.attempts += 1
         job_id = job.id
