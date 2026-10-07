@@ -8,7 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from .call_routing import RoutingUpdate, initial_action, is_open, selected_option, _config
+from .ai import configured as ai_configured, quota
+from .call_routing import RoutingUpdate, is_open, selected_option, _config
 from .config import settings
 from .models import CallRouting, DB, Number
 from .security import csrf, current_user, rate_limit
@@ -31,7 +32,7 @@ class SimulationRequest(BaseModel):
 
 
 def configured():
-    return bool(settings.ai_url and settings.ai_model)
+    return ai_configured()
 
 
 def _json_completion(system, user, max_tokens=1200):
@@ -40,7 +41,8 @@ def _json_completion(system, user, max_tokens=1200):
     headers = {"Authorization": "Bearer " + settings.ai_key} if settings.ai_key else {}
     try:
         with httpx.Client(timeout=httpx.Timeout(8), follow_redirects=False, trust_env=False) as client:
-            response = client.post(
+            with client.stream(
+                "POST",
                 settings.ai_url + "/chat/completions",
                 headers=headers,
                 json={
@@ -52,9 +54,14 @@ def _json_completion(system, user, max_tokens=1200):
                     "max_tokens": max_tokens,
                     "temperature": 0,
                 },
-            )
-            response.raise_for_status()
-        raw = response.json()["choices"][0]["message"]["content"]
+            ) as response:
+                response.raise_for_status()
+                raw_bytes = bytearray()
+                for chunk in response.iter_bytes():
+                    raw_bytes.extend(chunk)
+                    if len(raw_bytes) > 65536:
+                        raise ValueError
+        raw = json.loads(raw_bytes)["choices"][0]["message"]["content"]
         if not isinstance(raw, str) or len(raw) > 30000:
             raise ValueError
         return json.loads(raw)
@@ -106,9 +113,10 @@ def draft(number_id: str, data: DraftRequest, user=Depends(current_user)):
     if user.role != "owner":
         raise HTTPException(403, "Account owner required")
     rate_limit("routing-autopilot:" + user.id, 6)
-    with DB() as db:
+    with DB.begin() as db:
         number = _number(db, user.tenant_id, number_id)
         current = _default_current(db, number)
+        quota(db, user.tenant_id)
 
     system = (
         "You convert an owner's plain-English business call-routing request into JSON. "
@@ -145,7 +153,7 @@ def draft(number_id: str, data: DraftRequest, user=Depends(current_user)):
     }
 
 
-def classify_intent(config, speech):
+def classify_intent(config, speech, quota_db=None, tenant_id=""):
     speech = (speech or "").strip()
     if not speech or not config.get("intent_first"):
         return ""
@@ -163,6 +171,8 @@ def classify_intent(config, speech):
 
     if not configured():
         return ""
+    if quota_db is not None and tenant_id:
+        quota(quota_db, tenant_id)
     choices = [
         {
             "digit": option.get("digit"),
