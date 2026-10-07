@@ -4,8 +4,9 @@ from sqlalchemy import select
 from twilio.request_validator import RequestValidator
 from app.config import settings
 from app.main import app
-from app.models import DB, Event, Message, Number, Order, Suppression, Tenant
-from app.security import encrypt
+from app.models import Customer, CustomerState, DB, Event, Message, Number, Order, RecoveryJob, Suppression, Tenant
+from app.security import decrypt, encrypt
+from app.customer_os import register_verified_identity
 from app.worker import provision_one, send_one
 from app.company_verification import release_waiting_orders
 
@@ -331,6 +332,176 @@ def test_call_menu_rejects_loopback_destination():
         'options':[{'digit':'1','label':'Sales','destination':'+442080001001'}],
     },headers=HEADERS)
     assert response.status_code==422
+
+
+def test_ring_group_supports_simultaneous_and_ordered_ringing(monkeypatch):
+    c,t=customer()
+    enable(t)
+    n=number(t)
+    base={
+        'enabled':True,
+        'greeting':'Thank you for calling Example Limited.',
+        'fallback':'+447700900099',
+        'ring_seconds':20,
+        'business_hours':{'enabled':False,'timezone':'Europe/London','weekdays':[0,1,2,3,4],'opens':'09:00','closes':'17:00','holidays':[],'after_hours':'fallback'},
+        'emergency_mode':'normal',
+        'never_miss':['fallback','callback'],
+        'vip_destination':'',
+        'whisper':False,
+        'voicemail_greeting':'Your message will be recorded. Please leave it after the tone.',
+        'transcribe_voicemail':False,
+        'callback_message':'We have saved your callback request and the team will follow up.',
+        'options':[{
+            'digit':'1','label':'Sales','action':'dial','destination':'+447700900011',
+            'destinations':['+447700900011','+447700900012'],'strategy':'simultaneous'
+        }],
+    }
+    assert c.put(f'/api/numbers/{n}/call-routing',json=base,headers=HEADERS).status_code==200
+    monkeypatch.setattr('app.main.within_budget',lambda client,tenant:True)
+    monkeypatch.setattr('app.main.tenant_client',lambda tenant:MagicMock())
+    initial={'To':'+442080001001','From':'+447700900001','CallSid':'CAgroup1'}
+    assert '<Gather' in twilio_post(c,'/webhooks/twilio/voice',t,initial).text
+    group=twilio_post(c,'/webhooks/twilio/voice-menu',t,{'CallSid':'CAgroup1','Digits':'1'})
+    assert group.text.count('<Number')==2
+    assert 'sequential="true"' not in group.text
+
+    base['options'][0]['strategy']='sequential'
+    assert c.put(f'/api/numbers/{n}/call-routing',json=base,headers=HEADERS).status_code==200
+    initial['CallSid']='CAgroup2'
+    assert '<Gather' in twilio_post(c,'/webhooks/twilio/voice',t,initial).text
+    ordered=twilio_post(c,'/webhooks/twilio/voice-menu',t,{'CallSid':'CAgroup2','Digits':'1'})
+    assert ordered.text.count('<Number')==2
+    assert 'sequential="true"' in ordered.text
+
+
+def test_emergency_override_bypasses_menu(monkeypatch):
+    c,t=customer()
+    enable(t)
+    n=number(t)
+    config={
+        'enabled':True,
+        'greeting':'Thank you for calling Example Limited.',
+        'fallback':'+447700900099',
+        'ring_seconds':20,
+        'options':[{'digit':'1','label':'Sales','action':'dial','destination':'+447700900011','destinations':['+447700900011'],'strategy':'simultaneous'}],
+        'business_hours':{'enabled':False,'timezone':'Europe/London','weekdays':[0,1,2,3,4],'opens':'09:00','closes':'17:00','holidays':[],'after_hours':'fallback'},
+        'emergency_mode':'closed',
+        'never_miss':['fallback','callback'],
+        'vip_destination':'',
+        'whisper':False,
+        'voicemail_greeting':'Your message will be recorded. Please leave it after the tone.',
+        'transcribe_voicemail':False,
+        'callback_message':'We have saved your callback request and the team will follow up.',
+    }
+    assert c.put(f'/api/numbers/{n}/call-routing',json=config,headers=HEADERS).status_code==200
+    monkeypatch.setattr('app.main.within_budget',lambda client,tenant:True)
+    monkeypatch.setattr('app.main.tenant_client',lambda tenant:MagicMock())
+    response=twilio_post(c,'/webhooks/twilio/voice',t,{'To':'+442080001001','From':'+447700900001','CallSid':'CAclosed'})
+    assert '<Gather' not in response.text
+    assert 'currently closed' in response.text
+
+
+def test_verified_vip_bypasses_menu_and_receives_private_brief(monkeypatch):
+    c,t=customer()
+    enable(t)
+    n=number(t)
+    with DB.begin() as db:
+        customer=Customer(tenant_id=t)
+        db.add(customer)
+        db.flush()
+        db.add(CustomerState(
+            customer_id=customer.id,tenant_id=t,vip=True,owner='Martin',
+            encrypted_state=encrypt({'summary':'Waiting for revised quote','next_best_action':'Discuss renewal'})
+        ))
+        register_verified_identity(db,t,customer.id,'phone','+447700900001')
+
+    config={
+        'enabled':True,
+        'greeting':'Thank you for calling Example Limited.',
+        'fallback':'+447700900099',
+        'ring_seconds':20,
+        'options':[{'digit':'1','label':'Sales','action':'dial','destination':'+447700900011','destinations':['+447700900011'],'strategy':'simultaneous'}],
+        'business_hours':{'enabled':False,'timezone':'Europe/London','weekdays':[0,1,2,3,4],'opens':'09:00','closes':'17:00','holidays':[],'after_hours':'fallback'},
+        'emergency_mode':'normal',
+        'never_miss':['fallback','callback'],
+        'vip_destination':'+447700900077',
+        'whisper':True,
+        'voicemail_greeting':'Your message will be recorded. Please leave it after the tone.',
+        'transcribe_voicemail':False,
+        'callback_message':'We have saved your callback request and the team will follow up.',
+    }
+    assert c.put(f'/api/numbers/{n}/call-routing',json=config,headers=HEADERS).status_code==200
+    monkeypatch.setattr('app.main.within_budget',lambda client,tenant:True)
+    monkeypatch.setattr('app.main.tenant_client',lambda tenant:MagicMock())
+    response=twilio_post(c,'/webhooks/twilio/voice',t,{'To':'+442080001001','From':'+447700900001','CallSid':'CAvip'})
+    assert '+447700900077' in response.text
+    assert '<Gather' not in response.text
+    assert 'voice-whisper?call=CAvip' in response.text
+
+    brief=twilio_post(c,'/webhooks/twilio/voice-whisper?call=CAvip',t,{'CallSid':'CAchild'})
+    assert 'VIP customer' in brief.text
+    assert 'Waiting for revised quote' in brief.text
+    assert 'Suggested next action' in brief.text
+
+
+def test_callback_choice_creates_recovery_item(monkeypatch):
+    c,t=customer()
+    enable(t)
+    n=number(t)
+    config={
+        'enabled':True,
+        'greeting':'Thank you for calling Example Limited.',
+        'fallback':'+447700900099',
+        'ring_seconds':20,
+        'options':[{'digit':'3','label':'Request a callback','action':'callback','destination':'','destinations':[],'strategy':'simultaneous'}],
+        'business_hours':{'enabled':False,'timezone':'Europe/London','weekdays':[0,1,2,3,4],'opens':'09:00','closes':'17:00','holidays':[],'after_hours':'fallback'},
+        'emergency_mode':'normal',
+        'never_miss':['fallback','callback'],
+        'vip_destination':'',
+        'whisper':False,
+        'voicemail_greeting':'Your message will be recorded. Please leave it after the tone.',
+        'transcribe_voicemail':False,
+        'callback_message':'We have saved your callback request and the team will follow up.',
+    }
+    assert c.put(f'/api/numbers/{n}/call-routing',json=config,headers=HEADERS).status_code==200
+    monkeypatch.setattr('app.main.within_budget',lambda client,tenant:True)
+    monkeypatch.setattr('app.main.tenant_client',lambda tenant:MagicMock())
+    assert '<Gather' in twilio_post(c,'/webhooks/twilio/voice',t,{'To':'+442080001001','From':'+447700900001','CallSid':'CAcallback'}).text
+    result=twilio_post(c,'/webhooks/twilio/voice-menu',t,{'CallSid':'CAcallback','Digits':'3'})
+    assert 'saved your callback request' in result.text
+    with DB() as db:
+        job=db.scalar(select(RecoveryJob).where(RecoveryJob.tenant_id==t,RecoveryJob.kind=='callback_requested'))
+        assert job is not None
+        assert decrypt(job.encrypted_payload)['from']=='+447700900001'
+
+
+def test_voicemail_transcription_is_explicit_opt_in(monkeypatch):
+    c,t=customer()
+    enable(t)
+    n=number(t)
+    config={
+        'enabled':True,
+        'greeting':'Thank you for calling Example Limited.',
+        'fallback':'+447700900099',
+        'ring_seconds':20,
+        'options':[{'digit':'4','label':'Leave a message','action':'voicemail','destination':'','destinations':[],'strategy':'simultaneous'}],
+        'business_hours':{'enabled':False,'timezone':'Europe/London','weekdays':[0,1,2,3,4],'opens':'09:00','closes':'17:00','holidays':[],'after_hours':'fallback'},
+        'emergency_mode':'normal',
+        'never_miss':['voicemail'],
+        'vip_destination':'',
+        'whisper':False,
+        'voicemail_greeting':'Your message will be recorded. Please leave it after the tone.',
+        'transcribe_voicemail':True,
+        'callback_message':'We have saved your callback request and the team will follow up.',
+    }
+    assert c.put(f'/api/numbers/{n}/call-routing',json=config,headers=HEADERS).status_code==200
+    monkeypatch.setattr('app.main.within_budget',lambda client,tenant:True)
+    monkeypatch.setattr('app.main.tenant_client',lambda tenant:MagicMock())
+    assert '<Gather' in twilio_post(c,'/webhooks/twilio/voice',t,{'To':'+442080001001','From':'+447700900001','CallSid':'CAvm'}).text
+    voicemail=twilio_post(c,'/webhooks/twilio/voice-menu',t,{'CallSid':'CAvm','Digits':'4'})
+    assert '<Record' in voicemail.text
+    assert 'transcribe="true"' in voicemail.text
+    assert 'voice-voicemail-transcription' in voicemail.text
 
 
 def test_voice_requires_signature_and_active_account(monkeypatch):
