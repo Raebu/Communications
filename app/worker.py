@@ -228,6 +228,9 @@ def run():
             from .customer_os import obligation_one
 
             worked = obligation_one() or worked
+            from .conversation_intelligence import intelligence_one
+
+            worked = intelligence_one() or worked
             from .outbound_hooks import webhook_one
 
             worked = webhook_one() or worked
