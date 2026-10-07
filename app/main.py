@@ -1242,6 +1242,280 @@ async def voice_menu(request: Request):
     return Response(xml, media_type="application/xml")
 
 
+def _queue_ticket_for(db, tenant_id, ticket_id):
+    ticket = db.scalar(
+        select(QueueTicket).where(
+            QueueTicket.id == ticket_id,
+            QueueTicket.tenant_id == tenant_id,
+        ).with_for_update()
+    )
+    if not ticket:
+        raise HTTPException(404, "Queue ticket not found")
+    return ticket
+
+
+@app.post("/webhooks/twilio/queue-wait")
+async def queue_wait(request: Request):
+    tenant_id, p = await validate_twilio(request)
+    ticket_id = request.query_params.get("ticket", "")
+    with DB.begin() as db:
+        ticket = _queue_ticket_for(db, tenant_id, ticket_id)
+        if p.get("CallSid", "") != ticket.call_sid or ticket.status not in {"waiting", "agent_calling", "bridging"}:
+            return Response("<Response><Pause length="5"/></Response>", media_type="application/xml")
+        payload = decrypt(ticket.encrypted_payload) if ticket.encrypted_payload else {}
+        xml = queue_wait_xml(
+            p.get("QueuePosition", "1"),
+            p.get("AvgQueueTime", "0"),
+            settings.public_url + "/webhooks/twilio/queue-wait-choice?ticket=" + ticket.id,
+            bool(payload.get("callback_enabled", True)),
+        )
+    return Response(xml, media_type="application/xml")
+
+
+@app.post("/webhooks/twilio/queue-wait-choice")
+async def queue_wait_choice(request: Request):
+    tenant_id, p = await validate_twilio(request)
+    ticket_id = request.query_params.get("ticket", "")
+    with DB.begin() as db:
+        ticket = _queue_ticket_for(db, tenant_id, ticket_id)
+        if p.get("CallSid", "") != ticket.call_sid:
+            raise HTTPException(409, "Queue call mismatch")
+        payload = decrypt(ticket.encrypted_payload) if ticket.encrypted_payload else {}
+        if (
+            p.get("Digits") != "1"
+            or not payload.get("callback_enabled", True)
+            or ticket.status not in {"waiting", "agent_calling"}
+        ):
+            return Response("<Response><Pause length="5"/></Response>", media_type="application/xml")
+        ticket.status = "virtual_waiting"
+        ticket.provider_sid = ""
+        ticket.current_destination = ""
+        ticket.updated_at = now()
+        ticket.next_attempt_at = now() + timedelta(seconds=15)
+        payload["resume_status"] = "virtual_waiting"
+        payload["attempted"] = []
+        ticket.encrypted_payload = encrypt(payload)
+        event = _call_event(db, tenant_id, ticket.call_sid)
+        record_event(
+            db,
+            tenant_id,
+            "call.queue_callback_requested",
+            "voice",
+            ticket.call_sid + ":virtual-callback",
+            event.customer_id if event else None,
+            {"call_sid": ticket.call_sid, "queue": ticket.queue_name},
+        )
+    return Response(leave_queue_xml(), media_type="application/xml")
+
+
+@app.post("/webhooks/twilio/queue-result")
+async def queue_result(request: Request):
+    tenant_id, p = await validate_twilio(request)
+    ticket_id = request.query_params.get("ticket", "")
+    with DB.begin() as db:
+        ticket = _queue_ticket_for(db, tenant_id, ticket_id)
+        if p.get("CallSid", "") != ticket.call_sid:
+            raise HTTPException(409, "Queue call mismatch")
+        call = db.scalar(
+            select(Call).where(Call.sid == ticket.call_sid, Call.tenant_id == tenant_id).with_for_update()
+        )
+        if not call:
+            raise HTTPException(404, "Call not found")
+        event = _call_event(db, tenant_id, call.sid)
+        result = p.get("QueueResult", "")
+        queue_time = p.get("QueueTime", "0")
+
+        if result == "leave" and ticket.status == "virtual_waiting":
+            _finish_call(call)
+            return Response(
+                "<Response><Say>Your place has been saved. We will call you when it is your turn.</Say><Hangup/></Response>",
+                media_type="application/xml",
+            )
+
+        if result in {"bridged", "redirected-from-bridged"}:
+            ticket.status = "completed"
+            ticket.completed_at = now()
+            ticket.updated_at = now()
+            _finish_call(call)
+            record_event(
+                db,
+                tenant_id,
+                "call.queue_connected",
+                "voice",
+                call.sid + ":queue-connected",
+                event.customer_id if event else None,
+                {"call_sid": call.sid, "queue_time": queue_time, "queue": ticket.queue_name},
+            )
+            record_event(
+                db,
+                tenant_id,
+                "call.answered",
+                "voice",
+                call.sid,
+                event.customer_id if event else None,
+                {"queue": True, "queue_time": queue_time},
+            )
+            return Response("<Response/>", media_type="application/xml")
+
+        if result in {"hangup", "system-error"}:
+            ticket.status = "abandoned" if result == "hangup" else "attention"
+            ticket.completed_at = now() if result == "hangup" else None
+            ticket.updated_at = now()
+            _finish_call(call)
+            record_event(
+                db,
+                tenant_id,
+                "call.queue_abandoned" if result == "hangup" else "call.queue_error",
+                "voice",
+                call.sid + ":queue-result:" + result,
+                event.customer_id if event else None,
+                {"call_sid": call.sid, "queue_time": queue_time, "result": result},
+            )
+            if result == "hangup":
+                _queue_call_recovery(db, tenant_id, call, "missed_call", "queue_abandoned")
+            return Response("<Response/>", media_type="application/xml")
+
+        if result in {"queue-full", "error", "redirected"}:
+            ticket.status = "attention"
+            ticket.updated_at = now()
+            tenant = db.get(Tenant, tenant_id)
+            number = db.get(Number, call.number_id)
+            route = routing_for(db, number) if number else None
+            if route and tenant and number:
+                return Response(
+                    _never_miss_xml(db, tenant, number, call, route, 0),
+                    media_type="application/xml",
+                )
+        return Response("<Response/>", media_type="application/xml")
+
+
+@app.post("/webhooks/twilio/queue-agent")
+async def queue_agent(request: Request):
+    tenant_id, p = await validate_twilio(request)
+    ticket_id = request.query_params.get("ticket", "")
+    with DB.begin() as db:
+        ticket = _queue_ticket_for(db, tenant_id, ticket_id)
+        provider_sid = p.get("CallSid", "")
+        if ticket.provider_sid and provider_sid != ticket.provider_sid:
+            raise HTTPException(409, "Queue agent call mismatch")
+        if not ticket.provider_sid:
+            ticket.provider_sid = provider_sid
+        if ticket.status not in {"dialing_agent", "agent_calling"}:
+            return Response(unavailable_xml(), media_type="application/xml")
+        tenant = db.get(Tenant, tenant_id)
+        call = db.scalar(select(Call).where(Call.sid == ticket.call_sid, Call.tenant_id == tenant_id))
+        number = db.get(Number, ticket.number_id)
+        if not tenant or not call or not number:
+            raise HTTPException(404, "Queue resources not found")
+        payload = decrypt(ticket.encrypted_payload) if ticket.encrypted_payload else {}
+        media = _human_media_options(db, tenant, number, call)
+        resume = payload.get("resume_status", "waiting")
+
+        if resume == "virtual_waiting":
+            caller = str(payload.get("caller", ""))
+            if not caller.startswith("+44") or not caller[1:].isdigit():
+                ticket.status = "attention"
+                return Response(unavailable_xml(), media_type="application/xml")
+            ticket.status = "calling_customer"
+            ticket.updated_at = now()
+            xml = dial_group_xml(
+                [caller],
+                max(1, min(10, call.reserved_minutes)),
+                settings.public_url + "/webhooks/twilio/queue-agent-result?ticket=" + ticket.id,
+                20,
+                "",
+                False,
+                **media,
+                caller_id=number.phone,
+            )
+        else:
+            ticket.status = "bridging"
+            ticket.updated_at = now()
+            xml = queue_agent_xml(
+                ticket.queue_name,
+                settings.public_url + "/webhooks/twilio/queue-agent-result?ticket=" + ticket.id,
+                settings.public_url + "/webhooks/twilio/queue-connect-notice?ticket=" + ticket.id,
+                record=media["record"],
+                recording_callback=media["recording_callback"],
+                transcribe=media["transcribe"],
+                transcription_callback=media["transcription_callback"],
+                transcription_language=media["transcription_language"],
+            )
+    return Response(xml, media_type="application/xml")
+
+
+@app.post("/webhooks/twilio/queue-connect-notice")
+async def queue_connect_notice(request: Request):
+    tenant_id, p = await validate_twilio(request)
+    ticket_id = request.query_params.get("ticket", "")
+    with DB.begin() as db:
+        ticket = _queue_ticket_for(db, tenant_id, ticket_id)
+        if p.get("CallSid", "") != ticket.call_sid:
+            raise HTTPException(409, "Queue caller mismatch")
+    return Response(
+        "<Response><Say>Thank you for waiting. You are being connected now.</Say></Response>",
+        media_type="application/xml",
+    )
+
+
+@app.post("/webhooks/twilio/queue-agent-result")
+async def queue_agent_result(request: Request):
+    tenant_id, p = await validate_twilio(request)
+    ticket_id = request.query_params.get("ticket", "")
+    with DB.begin() as db:
+        ticket = _queue_ticket_for(db, tenant_id, ticket_id)
+        if ticket.provider_sid and p.get("CallSid", "") != ticket.provider_sid:
+            raise HTTPException(409, "Queue agent call mismatch")
+        payload = decrypt(ticket.encrypted_payload) if ticket.encrypted_payload else {}
+        resume = payload.get("resume_status", "waiting")
+        dial_status = p.get("DialCallStatus", "")
+        event = _call_event(db, tenant_id, ticket.call_sid)
+
+        if dial_status == "completed":
+            ticket.status = "completed"
+            ticket.completed_at = now()
+            ticket.updated_at = now()
+            record_event(
+                db,
+                tenant_id,
+                "call.queue_callback_connected" if resume == "virtual_waiting" else "call.queue_connected",
+                "voice",
+                ticket.call_sid + ":agent-connected",
+                event.customer_id if event else None,
+                {"call_sid": ticket.call_sid, "virtual_callback": resume == "virtual_waiting"},
+            )
+            return Response("<Response/>", media_type="application/xml")
+
+        ticket.status = resume if resume in {"waiting", "virtual_waiting"} else "waiting"
+        ticket.provider_sid = ""
+        ticket.current_destination = ""
+        ticket.updated_at = now()
+        ticket.next_attempt_at = now() + timedelta(seconds=45 if resume == "virtual_waiting" else 15)
+    return Response("<Response/>", media_type="application/xml")
+
+
+@app.post("/webhooks/twilio/queue-agent-status")
+async def queue_agent_status(request: Request):
+    tenant_id, p = await validate_twilio(request)
+    ticket_id = request.query_params.get("ticket", "")
+    with DB.begin() as db:
+        ticket = _queue_ticket_for(db, tenant_id, ticket_id)
+        if ticket.provider_sid and p.get("CallSid", "") != ticket.provider_sid:
+            raise HTTPException(409, "Queue agent call mismatch")
+        if ticket.status in {"completed", "abandoned", "attention", "review", "virtual_waiting", "waiting"}:
+            return Response(status_code=204)
+        payload = decrypt(ticket.encrypted_payload) if ticket.encrypted_payload else {}
+        resume = payload.get("resume_status", "waiting")
+        terminal = p.get("CallStatus", "")
+        if terminal in {"busy", "failed", "no-answer", "canceled", "completed"}:
+            ticket.status = resume if resume in {"waiting", "virtual_waiting"} else "waiting"
+            ticket.provider_sid = ""
+            ticket.current_destination = ""
+            ticket.updated_at = now()
+            ticket.next_attempt_at = now() + timedelta(seconds=45 if resume == "virtual_waiting" else 15)
+    return Response(status_code=204)
+
+
 @app.post("/webhooks/twilio/voice-route-result")
 async def voice_route_result(request: Request):
     tenant_id, p = await validate_twilio(request)
