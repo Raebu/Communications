@@ -1287,11 +1287,13 @@ async def queue_wait_choice(request: Request):
             or ticket.status not in {"waiting", "agent_calling"}
         ):
             return Response("<Response><Pause length="5"/></Response>", media_type="application/xml")
-        ticket.status = "virtual_waiting"
-        ticket.provider_sid = ""
-        ticket.current_destination = ""
+        hunt_in_flight = ticket.status == "agent_calling"
+        if not hunt_in_flight:
+            ticket.status = "virtual_waiting"
+            ticket.provider_sid = ""
+            ticket.current_destination = ""
+            ticket.next_attempt_at = now() + timedelta(seconds=15)
         ticket.updated_at = now()
-        ticket.next_attempt_at = now() + timedelta(seconds=15)
         payload["resume_status"] = "virtual_waiting"
         payload["attempted"] = []
         ticket.encrypted_payload = encrypt(payload)
@@ -1325,7 +1327,8 @@ async def queue_result(request: Request):
         result = p.get("QueueResult", "")
         queue_time = p.get("QueueTime", "0")
 
-        if result == "leave" and ticket.status == "virtual_waiting":
+        payload = decrypt(ticket.encrypted_payload) if ticket.encrypted_payload else {}
+        if result == "leave" and payload.get("resume_status") == "virtual_waiting":
             _finish_call(call)
             return Response(
                 "<Response><Say>Your place has been saved. We will call you when it is your turn.</Say><Hangup/></Response>",
