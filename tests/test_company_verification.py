@@ -8,7 +8,7 @@ from sqlalchemy import select
 from app import company_verification as cv
 from app import regulatory_automation as rc
 from app.config import settings
-from app.models import CompanyVerification, DB, EmailJob, Tenant, User, VerifiedCompanyClaim, now
+from app.models import ActionToken, CompanyVerification, DB, EmailJob, Tenant, User, VerifiedCompanyClaim, now
 from app.security import decrypt, encrypt
 from test_flows import HEADERS, customer
 
@@ -388,7 +388,22 @@ def test_identity_creation_is_bound_capped_and_reused(configured, monkeypatch):
     assert call.args[1]["idempotency_key"].endswith(attempt)
 
 
-def test_identity_qr_renders_current_matching_stripe_session(configured, monkeypatch):
+def test_identity_qr_uses_one_time_mobile_handoff_and_fresh_stripe_url(configured, monkeypatch):
+    class FakeImage:
+        def save(self, output):
+            output.write(b"<svg></svg>")
+
+    captured = {}
+    class FakeQR:
+        def __init__(self, **kwargs):
+            pass
+        def add_data(self, value):
+            captured["url"] = value
+        def make(self, fit=True):
+            pass
+        def make_image(self, image_factory=None):
+            return FakeImage()
+
     class StripeLike:
         def __init__(self, **values):
             self.__dict__.update(values)
@@ -406,20 +421,44 @@ def test_identity_qr_renders_current_matching_stripe_session(configured, monkeyp
         proof.identity_session = "vs_live_qr"
         attempt = proof.attempt
 
+    monkeypatch.setattr(cv.qrcode, "QRCode", FakeQR)
+    response = c.get("/api/company-verification/identity-qr")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/svg+xml")
+    assert "/api/company-verification/identity-mobile/" in captured["url"]
+
+    token = captured["url"].rsplit("/", 1)[1]
+    token_hash = cv.hashlib.sha256(token.encode()).hexdigest()
+    with DB() as db:
+        action = db.get(ActionToken, token_hash)
+        assert action is not None
+        assert action.purpose == "identity_handoff"
+        assert action.used is False
+
+    landing = c.get(f"/api/company-verification/identity-mobile/{token}")
+    assert landing.status_code == 200
+    assert "Continue secure identity check" in landing.text
+
     session = StripeLike(
         id="vs_live_qr",
         metadata=StripeLike(attempt=attempt, tenant_id=tid),
         livemode=True,
-        url="https://verify.stripe.com/example-session",
+        url="https://verify.stripe.com/fresh-mobile-session",
     )
     api = MagicMock()
     api.v1.identity.verification_sessions.retrieve.return_value = session
     monkeypatch.setattr(cv, "identity_client", lambda: api)
 
-    response = c.get("/api/company-verification/identity-qr")
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("image/svg+xml")
-    assert b"<svg" in response.content
+    onward = c.post(f"/api/company-verification/identity-mobile/{token}/continue", follow_redirects=False)
+    assert onward.status_code == 303
+    assert onward.headers["location"] == "https://verify.stripe.com/fresh-mobile-session"
+    with DB() as db:
+        assert db.get(ActionToken, token_hash).used is True
+
+    reused = c.post(f"/api/company-verification/identity-mobile/{token}/continue", follow_redirects=False)
+    assert reused.status_code == 410
+
+
 
 
 def test_stripe_object_metadata_and_options_are_supported(configured, monkeypatch):

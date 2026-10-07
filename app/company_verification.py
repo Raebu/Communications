@@ -21,14 +21,14 @@ import qrcode
 import stripe
 import tldextract
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from qrcode.image.svg import SvgPathImage
 from sqlalchemy.exc import IntegrityError
 
 from .config import settings
-from .models import Audit, CompanyVerification, DB, EmailJob, RateBucket, Tenant, User, VerifiedCompanyClaim, now, uid
+from .models import ActionToken, Audit, CompanyVerification, DB, EmailJob, RateBucket, Tenant, User, VerifiedCompanyClaim, now, uid
 from .security import csrf, current_user, decrypt, encrypt, rate_limit
 
 router = APIRouter(prefix='/api/company-verification')
@@ -442,36 +442,81 @@ def identity(user=Depends(current_user)):
 def identity_qr(user=Depends(current_user)):
     owner(user)
     rate_limit('company-identity-qr:' + user.id, 20)
-    with DB() as db:
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    with DB.begin() as db:
         tenant = db.get(Tenant, user.tenant_id)
         proof = db.get(CompanyVerification, tenant.id)
         if (not proof or proof.user_id != user.id or not proof.identity_session
                 or proof.profile_hash != profile_hash(tenant)
                 or not all([proof.email_verified, proof.dns_verified, proof.registry_verified])):
             raise HTTPException(409, 'Start the director identity check first')
+        db.add(ActionToken(token_hash=token_hash, user_id=user.id, purpose='identity_handoff',
+                           expires_at=now() + timedelta(minutes=10)))
 
-        try:
-            session = identity_client().v1.identity.verification_sessions.retrieve(proof.identity_session)
-        except Exception:
-            raise HTTPException(503, 'The director identity session is temporarily unavailable') from None
+    handoff_url = settings.public_url + '/api/company-verification/identity-mobile/' + token
+    qr = qrcode.QRCode(version=None, box_size=8, border=4)
+    qr.add_data(handoff_url)
+    qr.make(fit=True)
+    image = qr.make_image(image_factory=SvgPathImage)
+    output = BytesIO()
+    image.save(output)
+    return Response(content=output.getvalue(), media_type='image/svg+xml',
+                    headers={'Content-Disposition': 'inline; filename="director-identity.svg"'})
 
-        metadata = stripe_dict(session.metadata)
-        if (metadata.get('tenant_id') != tenant.id or metadata.get('attempt') != proof.attempt
-                or (settings.environment == 'production' and not session.livemode)):
-            raise HTTPException(409, 'Identity verification does not match this company application')
 
-        parsed = urlsplit(session.url or '')
-        if parsed.scheme != 'https' or parsed.hostname != 'verify.stripe.com':
-            raise HTTPException(409, 'The director identity session is no longer available for handoff')
+def identity_handoff(token, consume=False):
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    with DB.begin() as db:
+        action = db.scalar(select(ActionToken).where(ActionToken.token_hash == token_hash).with_for_update())
+        if (not action or action.purpose != 'identity_handoff' or action.used
+                or aware(action.expires_at) < now()):
+            raise HTTPException(410, 'This phone handoff has expired. Return to Raeburn Connect and scan a new QR code.')
+        user = db.get(User, action.user_id)
+        tenant = db.get(Tenant, user.tenant_id) if user else None
+        proof = db.get(CompanyVerification, user.tenant_id) if user else None
+        if (not user or not tenant or not proof or proof.user_id != user.id or not proof.identity_session
+                or proof.profile_hash != profile_hash(tenant)
+                or not all([proof.email_verified, proof.dns_verified, proof.registry_verified])):
+            raise HTTPException(409, 'This director identity handoff is no longer valid.')
+        if consume:
+            action.used = True
+        return proof.identity_session, proof.attempt, tenant.id
 
-        qr = qrcode.QRCode(version=None, box_size=8, border=4)
-        qr.add_data(session.url)
-        qr.make(fit=True)
-        image = qr.make_image(image_factory=SvgPathImage)
-        output = BytesIO()
-        image.save(output)
-        return Response(content=output.getvalue(), media_type='image/svg+xml',
-                        headers={'Content-Disposition': 'inline; filename="director-identity.svg"'})
+
+@router.get('/identity-mobile/{token}', response_class=HTMLResponse)
+def identity_mobile(token: str):
+    identity_handoff(token)
+    safe_token = re.sub(r'[^A-Za-z0-9_-]', '', token)
+    return HTMLResponse(f'''<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Continue director verification · Raeburn Connect</title><link rel="stylesheet" href="/static/style.css"></head>
+<body class="mobile-handoff"><main class="mobile-handoff-main"><section class="feature mobile-handoff-card">
+<p class="eyebrow">SECURE DIRECTOR VERIFICATION</p><h1>Continue on this phone.</h1>
+<p class="lead">Your company checks are already complete. Continue to Stripe to verify the current director using your identity document and selfie.</p>
+<form method="post" action="/api/company-verification/identity-mobile/{safe_token}/continue">
+<button type="submit">Continue secure identity check</button></form>
+<p class="muted">If your camera opened this page inside a preview, open it in Safari or Chrome before continuing. This handoff expires after 10 minutes and works once.</p>
+</section></main></body></html>''')
+
+
+@router.post('/identity-mobile/{token}/continue')
+def identity_mobile_continue(token: str):
+    session_id, attempt, tenant_id = identity_handoff(token, consume=True)
+    try:
+        session = identity_client().v1.identity.verification_sessions.retrieve(session_id)
+    except Exception:
+        raise HTTPException(503, 'The director identity provider is temporarily unavailable. Return to Raeburn Connect and try again.') from None
+
+    metadata = stripe_dict(session.metadata)
+    if (metadata.get('tenant_id') != tenant_id or metadata.get('attempt') != attempt
+            or (settings.environment == 'production' and not session.livemode)):
+        raise HTTPException(409, 'Identity verification does not match this company application')
+
+    parsed = urlsplit(session.url or '')
+    if parsed.scheme != 'https' or parsed.hostname != 'verify.stripe.com':
+        raise HTTPException(409, 'The director identity session is no longer available. Return to Raeburn Connect and retry.')
+    return RedirectResponse(session.url, status_code=303)
 
 
 def registry(tenant):
