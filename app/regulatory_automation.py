@@ -4,7 +4,7 @@ from .models import Audit
 from .providers import create_subaccount, parent_client, tenant_client
 from .security import decrypt
 
-TYPES = {'Local': 'local', 'Mobile': 'mobile', 'TollFree': 'toll-free'}
+TYPES = {'Local': 'local', 'Mobile': 'mobile', 'TollFree': 'toll_free'}
 
 
 def only_named(rows, name):
