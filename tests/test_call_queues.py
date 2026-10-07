@@ -281,6 +281,43 @@ def test_virtual_callback_agent_dials_customer_from_business_number(monkeypatch)
     assert "queue-agent-result" in agent.text
 
 
+
+
+def test_virtual_callback_during_inflight_agent_hunt_reuses_same_agent_call(monkeypatch):
+    client, tenant_id, number_id = account()
+    start_queued_call(client, tenant_id, number_id, monkeypatch)
+    with DB.begin() as db:
+        ticket = db.scalar(select(QueueTicket).with_for_update())
+        ticket.provider_sid = "CAagent-inflight"
+        ticket.status = "agent_calling"
+        ticket_id = ticket.id
+
+    choice = signed_post(
+        client,
+        f"/webhooks/twilio/queue-wait-choice?ticket={ticket_id}",
+        tenant_id,
+        {"CallSid": "CAqueue1", "Digits": "1"},
+    )
+    assert choice.status_code == 200
+
+    with DB() as db:
+        ticket = db.get(QueueTicket, ticket_id)
+        payload = decrypt(ticket.encrypted_payload)
+        assert ticket.status == "agent_calling"
+        assert ticket.provider_sid == "CAagent-inflight"
+        assert payload["resume_status"] == "virtual_waiting"
+
+    agent = signed_post(
+        client,
+        f"/webhooks/twilio/queue-agent?ticket={ticket_id}",
+        tenant_id,
+        {"CallSid": "CAagent-inflight"},
+    )
+    assert agent.status_code == 200
+    assert "+447700900001" in agent.text
+    assert "queue-agent-result" in agent.text
+
+
 def test_failed_virtual_callback_cools_down_without_losing_priority(monkeypatch):
     client, tenant_id, number_id = account()
     start_queued_call(client, tenant_id, number_id, monkeypatch)
