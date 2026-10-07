@@ -8,7 +8,7 @@ from sqlalchemy import select
 from app import company_verification as cv
 from app import regulatory_automation as rc
 from app.config import settings
-from app.models import CompanyVerification, DB, EmailJob, RateBucket, Tenant, User, VerifiedCompanyClaim, now
+from app.models import CompanyVerification, DB, EmailJob, Tenant, User, VerifiedCompanyClaim, now
 from app.security import decrypt, encrypt
 from test_flows import HEADERS, customer
 
@@ -130,19 +130,23 @@ def test_routine_pending_poll_does_not_email(configured):
         assert proof.last_notified == "pending::"
 
 
-def test_verification_email_cap_uses_sent_plus_pending(configured):
-    recipient = "owner@example-business.co.uk"
+def test_verification_email_events_are_one_time_per_attempt(configured):
+    c, tid = applicant()
+    assert begin(c).status_code == 200
     with DB.begin() as db:
-        recipient_key = cv.hashlib.sha256(recipient.lower().encode()).hexdigest()[:32]
-        key = "verification-email-sent:" + recipient_key + ":" + now().date().isoformat()
-        db.add(RateBucket(key=key, count=5, expires_at=now() + timedelta(days=2)))
-        assert cv.verification_email_count(db, recipient) == 5
-        assert cv.mail(db, recipient, "First", "Body")
+        proof = db.get(CompanyVerification, tid)
+        user = db.get(User, proof.user_id)
+        # Start already queued the first two allowed events.
+        jobs = db.scalars(select(EmailJob)).all()
+        assert len(jobs) == 2
+        assert not cv.verification_event_mail(db, proof, "business_email", proof.mailbox, "Duplicate", "Body")
+        assert not cv.verification_event_mail(db, proof, "verification_started", user.email, "Duplicate", "Body")
+        assert cv.verification_event_mail(db, proof, "company_verified", user.email, "Company verified", "Body")
+        assert not cv.verification_event_mail(db, proof, "company_verified", user.email, "Duplicate", "Body")
+        assert cv.verification_event_mail(db, proof, "director_verified", user.email, "Director verified", "Body")
+        assert not cv.verification_event_mail(db, proof, "director_verified", user.email, "Duplicate", "Body")
         db.flush()
-        assert cv.verification_email_count(db, recipient) == 6
-        assert not cv.mail(db, recipient, "Blocked", "Body")
-        jobs = db.scalars(select(EmailJob).where(EmailJob.recipient == recipient)).all()
-        assert len(jobs) == 1
+        assert len(db.scalars(select(EmailJob)).all()) == 4
 
 
 def test_mailbox_and_dns_alone_never_prove_authority(configured):
@@ -391,18 +395,19 @@ def test_ambiguous_identity_creation_is_not_repeated(configured, monkeypatch):
         assert db.get(CompanyVerification, tid).reason == "provider_uncertain"
 
 
-def test_email_challenge_expiry_and_refresh_rotation(configured):
+def test_business_email_is_sent_once_per_attempt(configured):
     c, tid = applicant()
     assert begin(c).status_code == 200
-    with DB.begin() as db:
-        proof = db.get(CompanyVerification, tid)
-        proof.email_expires_at = now() - timedelta(seconds=1)
-        old_hash = proof.email_token_hash
-    assert c.post("/api/company-verification/resend-email", headers=HEADERS).status_code == 200
     with DB() as db:
         proof = db.get(CompanyVerification, tid)
-        assert proof.email_token_hash != old_hash and proof.email_sends == 2
-    assert c.post("/api/company-verification/resend-email", headers=HEADERS).status_code == 429
+        old_hash = proof.email_token_hash
+        assert proof.email_sends == 1
+        assert proof.email_expires_at == proof.expires_at
+    assert c.post("/api/company-verification/resend-email", headers=HEADERS).status_code == 409
+    with DB() as db:
+        proof = db.get(CompanyVerification, tid)
+        assert proof.email_token_hash == old_hash
+        assert proof.email_sends == 1
 
 
 def test_pending_company_claim_cannot_deny_service_to_another_domain(configured):
