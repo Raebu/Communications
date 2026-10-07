@@ -59,7 +59,7 @@ def test_registration_closed():
 def test_purchase_gates_and_idempotency():
     c,t=customer()
     data={'phone':'+442080001001','type':'Local','request_key':'1234567890abcdef'}
-    assert c.post('/api/orders',json=data,headers=HEADERS).status_code==409
+    assert c.post('/api/orders',json=data,headers=HEADERS).status_code==402
     enable(t)
     a=c.post('/api/orders',json=data,headers=HEADERS)
     b=c.post('/api/orders',json=data,headers=HEADERS)
