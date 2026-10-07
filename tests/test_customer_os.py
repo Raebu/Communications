@@ -5,8 +5,8 @@ from sqlalchemy import select
 
 from app.customer_os import obligation_one, record_event
 from app.main import app
-from app.models import Customer, CustomerState, DB, GuaranteeRule, Promise, RecoveryJob, Tenant, now
-from app.security import encrypt
+from app.models import Customer, CustomerState, DB, Promise, RecoveryJob, now
+from app.security import decrypt, encrypt
 
 
 HEADERS = {"origin": "http://localhost:8000", "x-requested-with": "Raeburn"}
@@ -65,7 +65,7 @@ def test_guarantee_creates_recovery_deadline():
         assert job is not None
         assert job.kind == "guarantee"
         assert job.status == "queued"
-        detail = __import__("app.security", fromlist=["decrypt"]).decrypt(job.encrypted_payload)
+        detail = decrypt(job.encrypted_payload)
         assert detail["rule_name"] == "Respond to missed calls"
 
 
