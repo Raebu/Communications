@@ -438,8 +438,11 @@ def enqueue_xml(queue, wait_url, action_url, announcement=""):
 
 
 def queue_wait_xml(position, average_wait, callback_url="", callback_enabled=True):
-    position = max(1, int(position or 1))
-    average_wait = max(0, int(average_wait or 0))
+    try:
+        position = max(1, int(position or 1))
+        average_wait = max(0, int(average_wait or 0))
+    except (TypeError, ValueError):
+        position, average_wait = 1, 0
     wait_text = "You are number " + str(position) + " in the queue."
     if average_wait:
         minutes = max(1, (average_wait + 59) // 60)
