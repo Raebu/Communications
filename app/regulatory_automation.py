@@ -121,7 +121,9 @@ def advance(db, tenant, proof, company):
             client = tenant_client(tenant)
             client.http_client.timeout = 5
             rc, regulation = regulation_for(client, proof)
-            attributes, contact = end_user_attributes(proof, company)
+            contact = decrypt(proof.encrypted_contact)
+            if not contact.get('phone'):
+                raise ValueError('provider_requirements')
             if not state.get('contact_mobile_checked'):
                 lookup = client.lookups.v2.phone_numbers(contact['phone']).fetch(fields='line_type_intelligence')
                 intelligence = lookup.line_type_intelligence or {}
@@ -129,6 +131,7 @@ def advance(db, tenant, proof, company):
                         or intelligence.get('error_code') or intelligence.get('type') != 'mobile'):
                     raise ValueError('provider_requirements')
                 state['contact_mobile_checked'] = True
+            attributes, contact = end_user_attributes(proof, company)
             attributes = requirements(regulation, attributes)
             current_requirements = json.dumps(regulation.requirements, sort_keys=True)
             if state.get('requirements') and state['requirements'] != current_requirements:
