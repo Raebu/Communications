@@ -469,6 +469,66 @@ def test_identity_qr_uses_one_time_mobile_handoff_and_stripe_modal(configured, m
 
 
 
+
+def test_identity_mobile_completion_reconciles_and_marks_director_verified(configured, monkeypatch):
+    c, tid = applicant()
+    ready_for_identity(c, tid)
+    token = "completion-token"
+
+    with DB.begin() as db:
+        proof = db.get(CompanyVerification, tid)
+        proof.identity_session = "vs_complete"
+        user = db.scalar(select(User).where(User.tenant_id == tid))
+        db.add(ActionToken(
+            token_hash=cv.hashlib.sha256(token.encode()).hexdigest(),
+            user_id=user.id,
+            purpose="identity_handoff",
+            expires_at=now() + timedelta(minutes=10),
+            used=True,
+        ))
+
+    monkeypatch.setattr(cv, "reconcile_identity", lambda proof, officers: True)
+
+    response = c.post(f"/api/company-verification/identity-mobile/{token}/complete")
+    assert response.status_code == 200
+    assert response.json()["status"] == "verified"
+
+    with DB() as db:
+        proof = db.get(CompanyVerification, tid)
+        assert proof.authority_verified is True
+        assert proof.status == "verified"
+
+
+def test_identity_mobile_completion_reports_processing_until_stripe_ready(configured, monkeypatch):
+    c, tid = applicant()
+    ready_for_identity(c, tid)
+    token = "processing-token"
+
+    with DB.begin() as db:
+        proof = db.get(CompanyVerification, tid)
+        proof.identity_session = "vs_processing"
+        user = db.scalar(select(User).where(User.tenant_id == tid))
+        db.add(ActionToken(
+            token_hash=cv.hashlib.sha256(token.encode()).hexdigest(),
+            user_id=user.id,
+            purpose="identity_handoff",
+            expires_at=now() + timedelta(minutes=10),
+            used=True,
+        ))
+
+    monkeypatch.setattr(cv, "reconcile_identity", lambda proof, officers: False)
+
+    response = c.post(f"/api/company-verification/identity-mobile/{token}/complete")
+    assert response.status_code == 200
+    assert response.json()["status"] == "processing"
+
+    with DB() as db:
+        proof = db.get(CompanyVerification, tid)
+        assert proof.authority_verified is False
+        assert proof.status == "pending"
+        assert proof.next_check_at <= now()
+
+
 def test_identity_mobile_modal_falls_back_to_redirect_without_publishable_key(configured, monkeypatch):
     class StripeLike:
         def __init__(self, **values):
