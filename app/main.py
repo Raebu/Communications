@@ -908,7 +908,7 @@ async def voice_menu(request: Request):
         if not digit and p.get("SpeechResult"):
             try:
                 rate_limit("voice-intent:" + t.id, 30)
-                digit = classify_intent(route, p.get("SpeechResult", "")[:500])
+                digit = classify_intent(route, p.get("SpeechResult", "")[:500], db, t.id)
             except HTTPException:
                 digit = ""
         option = selected_option(route, digit)
